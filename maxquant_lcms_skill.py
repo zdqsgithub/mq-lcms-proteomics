@@ -1,14 +1,15 @@
 """
-MaxQuant LC-MS/MS Proteomics Bioinformatics & Modeling Skill v2
-================================================================
+MaxQuant LC-MS/MS Proteomics Bioinformatics & Modeling Skill v2.1
+=================================================================
 Main entry point with mode dispatcher:
-  --mode comparison  : Group vs group (default)
-  --mode stability   : Time-course degradation analysis
-  --mode qc          : QC-only report
+  --mode comparison     : Group vs group (default)
+  --mode stability      : Time-course degradation analysis
+  --mode deep-stability : Stability + pathway + oxidation + protease
 
 Usage:
   python maxquant_lcms_skill.py --demo --output demo_report
   python maxquant_lcms_skill.py --input proteinGroups.txt --mode stability --output report
+  python maxquant_lcms_skill.py --input-dir ./txt --mode deep-stability --output report
 """
 import sys, os, argparse, hashlib
 from pathlib import Path
@@ -28,7 +29,14 @@ from visualization import (plot_msms_summary, plot_protein_counts,
                            plot_replicate_correlation, plot_venn, plot_volcano,
                            plot_allergen_heatmap, plot_pca, plot_top_proteins,
                            plot_timecourse_grid, plot_waterfall,
-                           plot_composition_shift, plot_grouped_bar_timecourse)
+                           plot_composition_shift, plot_grouped_bar_timecourse,
+                           plot_functional_enrichment, plot_mw_by_trend,
+                           plot_oxidation_heatmap, plot_degradation_routes_summary)
+from degradation_routes import (functional_enrichment, analyze_oxidation_sites,
+                                correlate_oxidation_degradation,
+                                semi_tryptic_kinetics, inventory_proteases_phosphatases,
+                                peptide_appearance, count_deamidation_motifs,
+                                detect_semi_tryptic)
 
 
 ALLERGEN_KEYWORDS = [
@@ -281,22 +289,135 @@ def run_stability(args):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  MODE: deep-stability (stability + pathway + oxidation + protease)
+# ═══════════════════════════════════════════════════════════════
+def run_deep_stability(args):
+    """Full stability analysis with degradation route characterization."""
+    # First run standard stability
+    run_stability(args)
+
+    output_dir = Path(args.output)
+    data_dir = Path(args.input_dir) if args.input_dir else Path(args.input).parent
+    group_names = None  # Will be re-detected
+
+    # Reload stability results
+    stab_csv = output_dir / 'tables' / 'stability_summary.csv'
+    pg_csv = output_dir / 'tables' / 'proteinGroups_filtered.csv'
+    if not stab_csv.exists() or not pg_csv.exists():
+        print("Stability results not found, skipping deep analysis")
+        return
+
+    stab_df = pd.read_csv(stab_csv)
+    pg = pd.read_csv(pg_csv)
+    _, _, groups, colors, _, _, _ = _prepare_data(args)
+    group_names = list(groups.keys())
+
+    report = ["\n## Deep Stability Analysis\n"]
+    R = report.append
+
+    # 1. Functional enrichment
+    print("Deep: Functional enrichment...")
+    cat_counts, cat_pcts, _ = functional_enrichment(stab_df)
+    plot_functional_enrichment(cat_pcts, cat_counts, output_dir)
+    R("### Functional Enrichment\n")
+    R("![Enrichment](fig_functional_enrichment.png)\n")
+
+    # 2. MW analysis
+    if 'Mol. weight [kDa]' in stab_df.columns:
+        plot_mw_by_trend(stab_df, output_dir)
+        R("### Molecular Weight\n")
+        R("![MW](fig_mw_by_trend.png)\n")
+
+    # 3. Oxidation analysis
+    ox_path = data_dir / 'Oxidation (M)Sites.txt'
+    if ox_path.exists():
+        print("Deep: Oxidation analysis...")
+        from core import extract_description
+        ox_df = analyze_oxidation_sites(ox_path, groups, extract_description)
+        plot_oxidation_heatmap(ox_df, group_names, output_dir)
+        R("### Oxidation Kinetics\n")
+        R("![Oxidation](fig_oxidation_heatmap.png)\n")
+
+        merged, r_val, p_val = correlate_oxidation_degradation(ox_df, stab_df, group_names)
+        if r_val is not None:
+            R(f"- Oxidation vs degradation: r={r_val:.3f}, p={p_val:.3f}\n")
+        ox_df.to_csv(output_dir / 'tables' / 'oxidation_sites.csv', index=False)
+
+    # 4. Protease & peptide analysis
+    pep_path = data_dir / 'peptides.txt'
+    ev_path = data_dir / 'evidence.txt'
+    if pep_path.exists():
+        print("Deep: Protease analysis...")
+        pep_df = pd.read_csv(pep_path, sep='\t', low_memory=False)
+        for col in ['Reverse', 'Potential contaminant']:
+            if col in pep_df.columns:
+                pep_df = pep_df[pep_df[col].fillna('').str.strip() != '+']
+
+        semi_ratios, pep_annotated = semi_tryptic_kinetics(pep_df, groups)
+        pep_info = peptide_appearance(pep_df, groups)
+        n_deamid = count_deamidation_motifs(pep_df)
+
+        R("### Protease Activity\n")
+        R(f"- New peptides at last TP: **{pep_info['gained_at_last']}**")
+        R(f"- Lost peptides: **{pep_info['lost_from_baseline']}**")
+        R(f"- Deamidation-prone motifs: **{n_deamid}**\n")
+
+        proteases, phosphatases = inventory_proteases_phosphatases(stab_df)
+        if len(proteases) > 0:
+            R("### Proteases Detected\n")
+            R("| Protein | Trend | Risk |")
+            R("|---------|-------|------|")
+            for _, r in proteases.iterrows():
+                R(f"| {str(r.get('description',''))[:40]} | {r.get('trend','-')} | {r.get('risk','-')} |")
+            R("")
+
+        # Compute missed cleavages and acetylation
+        mc_means = {}
+        acetyl_ratios = {}
+        if ev_path.exists():
+            ev = pd.read_csv(ev_path, sep='\t', low_memory=False)
+            for col in ['Reverse', 'Potential contaminant']:
+                if col in ev.columns:
+                    ev = ev[ev[col].fillna('').str.strip() != '+']
+            for g, samps in groups.items():
+                sub = ev[ev['Experiment'].isin(samps)]
+                mc_means[g] = sub['Missed cleavages'].mean() if len(sub) > 0 else 0
+                ace = sub['Modifications'].fillna('').str.contains('Acetyl', case=False).sum()
+                acetyl_ratios[g] = ace / len(sub) * 100 if len(sub) > 0 else 0
+
+        pep_counts = pep_info.get('present_per_group', {})
+        plot_degradation_routes_summary(semi_ratios, pep_counts, acetyl_ratios,
+                                        mc_means, group_names, colors, output_dir)
+        R("### Degradation Routes Summary\n")
+        R("![Routes](fig_degradation_routes.png)\n")
+
+    # Append to existing report
+    existing = (output_dir / 'stability_report.md').read_text(encoding='utf-8')
+    (output_dir / 'stability_report.md').write_text(
+        existing + '\n'.join(report), encoding='utf-8')
+    write_checksums(output_dir)
+    print(f"\nDeep stability analysis complete! -> {output_dir}")
+
+
+# ═══════════════════════════════════════════════════════════════
 #  Main dispatcher
 # ═══════════════════════════════════════════════════════════════
 MODES = {
     'comparison': run_comparison,
     'stability': run_stability,
+    'deep-stability': run_deep_stability,
 }
 
 
 def main():
-    parser = argparse.ArgumentParser(description='MaxQuant LC-MS/MS Proteomics Skill v2')
+    parser = argparse.ArgumentParser(description='MaxQuant LC-MS/MS Proteomics Skill v2.1')
     parser.add_argument('--input', help='proteinGroups.txt path')
+    parser.add_argument('--input-dir', help='MaxQuant txt/ directory (for deep-stability)')
     parser.add_argument('--input-type', default='maxquant', choices=['maxquant','diann'])
     parser.add_argument('--metadata', help='Sample metadata (SDRF/CSV)')
     parser.add_argument('--quant', default='iBAQ', choices=['iBAQ','lfq','intensity'])
     parser.add_argument('--mode', default='comparison', choices=list(MODES.keys()),
-                        help='Analysis mode: comparison (default) or stability')
+                        help='Analysis mode: comparison, stability, or deep-stability')
     parser.add_argument('--contrasts', help='Group pairs: "A,B;A,C" (comparison mode)')
     parser.add_argument('--fc-threshold', type=float, default=1.0)
     parser.add_argument('--fdr', type=float, default=0.05)
@@ -309,8 +430,12 @@ def main():
     if not args.demo and not args.input:
         parser.error("--input is required unless --demo is used")
 
+    # Auto-set input-dir from input path
+    if not args.input_dir and args.input:
+        args.input_dir = str(Path(args.input).parent)
+
     print("="*60)
-    print(f"MaxQuant LC-MS/MS Proteomics Analysis v2 [{args.mode}]")
+    print(f"MaxQuant LC-MS/MS Proteomics Analysis v2.1 [{args.mode}]")
     print("="*60)
 
     MODES[args.mode](args)

@@ -2,8 +2,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-59%2F59%20passed-brightgreen.svg)](#test-suite)
-[![v2](https://img.shields.io/badge/version-2.0-blue.svg)](#changelog)
+[![Tests](https://img.shields.io/badge/tests-76%2F76%20passed-brightgreen.svg)](#test-suite)
+[![v2.1](https://img.shields.io/badge/version-2.1-blue.svg)](#changelog)
 
 A specification-constrained **agent skill** for end-to-end processing of MaxQuant LC-MS/MS proteomics data. Supports both **group comparison** and **time-course stability** analysis modes, with extensible allergen/taxonomy databases and vectorized statistics.
 
@@ -39,12 +39,12 @@ This skill integrates methodologies from five established open-source projects:
 
 ## Features
 
-- **Two Analysis Modes**: Group comparison (`--mode comparison`) and time-course stability (`--mode stability`)
+- **Three Analysis Modes**: Group comparison (`--mode comparison`), time-course stability (`--mode stability`), and deep characterization (`--mode deep-stability`)
 - **Vectorized Statistics**: ~50-100x faster differential abundance via numpy broadcasting
 - **Extensible Allergen DB**: JSON-based WHO/IUIS nomenclature covering crustacean, plant/pollen, mite, insect, pet, and food allergens
 - **Extensible Taxonomy DB**: JSON-based species categorization for 13+ biological groups
 - **Auto-Detection**: Automatically detects sample groups and quantification columns from MaxQuant output
-- **16 Visualization Types**: Volcano, heatmap, PCA, Venn, time-course grids, waterfall charts, composition shifts
+- **20 Visualization Types**: Volcano, heatmap, PCA, Venn, time-course grids, waterfall charts, composition shifts, functional enrichment, MW distribution, oxidation heatmaps, degradation route summary
 - **Reproducibility Bundle**: Every run generates `commands.sh` and `checksums.sha256`
 - **Local-First**: All processing runs locally — no data uploaded anywhere
 
@@ -64,7 +64,10 @@ python maxquant_lcms_skill.py --demo --output demo_report
 # Demo: stability mode
 python maxquant_lcms_skill.py --demo --mode stability --output demo_stability
 
-# Run tests (59 tests)
+# Deep stability (includes oxidation, protease, pathway analysis)
+python maxquant_lcms_skill.py --input txt/proteinGroups.txt --mode deep-stability --output report
+
+# Run tests (76 tests)
 python test_skill.py
 ```
 
@@ -114,6 +117,20 @@ python maxquant_lcms_skill.py \
 
 **Example:** W6 mugwort allergen thermal stability at 37°C — the skill auto-detects Day 0/3/7 groups, normalizes to baseline, classifies proteins as Degrading/Stable/Increasing, and identifies profilin/polcalcin degradation as the cause of potency loss.
 
+### Mode 3: Deep Stability (v2.1 NEW)
+
+Full stability analysis + functional enrichment + oxidation kinetics + protease/degradation route characterization.
+
+```bash
+python maxquant_lcms_skill.py \
+  --input txt/proteinGroups.txt \
+  --mode deep-stability \
+  --quant iBAQ \
+  --output deep_report
+```
+
+**Produces:** Everything from stability mode PLUS functional enrichment bar charts, MW distributions, oxidation heatmaps, protease inventory, semi-tryptic peptide analysis, deamidation motif counts, and a 4-panel degradation route summary.
+
 ---
 
 ## Architecture
@@ -122,18 +139,24 @@ python maxquant_lcms_skill.py \
 ┌─────────────────────────────────────────────────────┐
 │           maxquant_lcms_skill.py (CLI)               │
 │              Mode Dispatcher                         │
-│  ┌──────────────┐  ┌──────────────┐                  │
-│  │ comparison   │  │  stability   │  ... extensible  │
-│  └──────┬───────┘  └──────┬───────┘                  │
-├─────────┴──────────────────┴────────────────────────┤
+│  ┌────────────┐ ┌────────────┐ ┌────────────────┐    │
+│  │ comparison │ │ stability  │ │ deep-stability │    │
+│  └─────┬──────┘ └─────┬──────┘ └───────┬────────┘    │
+├────────┴──────────────┴────────────────┴─────────────┤
 │  core.py              stats_engine.py                │
 │  ─ load/filter        ─ vectorized DE                │
 │  ─ FASTA parsing      ─ timecourse_analysis()        │
 │  ─ allergen_db.json   ─ BH-FDR, s0                   │
 │  ─ taxonomy_db.json   ─ PCA, SVM/RF                  │
 ├─────────────────────────────────────────────────────┤
+│  degradation_routes.py (v2.1 NEW)                    │
+│  ─ functional enrichment   ─ oxidation kinetics      │
+│  ─ protease inventory      ─ semi-tryptic detection  │
+│  ─ deamidation assessment  ─ peptide appearance      │
+├─────────────────────────────────────────────────────┤
 │  visualization.py                                    │
 │  ─ 12 comparison plots  ─ 4 time-course plots        │
+│  ─ 4 degradation route plots (v2.1 NEW)              │
 ├─────────────────────────────────────────────────────┤
 │  Reproducibility: commands.sh + checksums.sha256     │
 └─────────────────────────────────────────────────────┘
@@ -168,11 +191,27 @@ python maxquant_lcms_skill.py \
 | `run_pca()` | PCA dimensionality reduction |
 | `train_classifier()` | SVM/RF with LOO-CV |
 
-### `visualization.py` — 16 Figure Types
+### `degradation_routes.py` — Degradation Characterization (v2.1 NEW)
+
+| Function | Description |
+|----------|-------------|
+| `assign_functional_category()` | Classify proteins into 14 functional categories |
+| `functional_enrichment()` | Enrichment analysis across Degrading/Stable/Increasing |
+| `analyze_oxidation_sites()` | Parse Oxidation (M)Sites.txt, compute kinetics |
+| `correlate_oxidation_degradation()` | Pearson correlation: oxidation vs stability |
+| `detect_semi_tryptic()` | Classify peptides as fully/semi/non-tryptic |
+| `semi_tryptic_kinetics()` | Track protease activity over time |
+| `inventory_proteases_phosphatases()` | Catalog endogenous proteases with risk level |
+| `peptide_appearance()` | Detect new/lost peptides (clipping products) |
+| `count_deamidation_motifs()` | Count NG/NS/NT deamidation hotspots |
+
+### `visualization.py` — 20 Figure Types
 
 **Comparison mode:** MS/MS summary, protein counts, missing values, intensity distribution, replicate correlation, Venn diagram, volcano, allergen heatmap, PCA, top proteins
 
-**Stability mode (v2 NEW):** Time-course grid, waterfall chart, composition shift, grouped bar
+**Stability mode:** Time-course grid, waterfall chart, composition shift, grouped bar
+
+**Deep stability (v2.1 NEW):** Functional enrichment bar, MW by trend, oxidation heatmap, 4-panel degradation routes
 
 ---
 
@@ -185,7 +224,8 @@ python maxquant_lcms_skill.py [OPTIONS]
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `--input` | Path to `proteinGroups.txt` | required (unless `--demo`) |
-| `--mode` | `comparison` or `stability` | `comparison` |
+| `--input-dir` | MaxQuant `txt/` directory | auto from `--input` |
+| `--mode` | `comparison`, `stability`, or `deep-stability` | `comparison` |
 | `--quant` | `iBAQ`, `lfq`, or `intensity` | `iBAQ` |
 | `--contrasts` | Group pairs: `"A,B;A,C"` | all pairwise |
 | `--fc-threshold` | log2 fold-change cutoff | `1.0` |
@@ -267,11 +307,27 @@ report/
 └── checksums.sha256
 ```
 
+### Deep Stability Mode (v2.1)
+```
+report/
+├── stability_report.md            # Includes deep analysis appendix
+├── fig_functional_enrichment.png  # Functional category enrichment
+├── fig_mw_by_trend.png            # MW distribution by trend
+├── fig_oxidation_heatmap.png      # Top oxidation sites
+├── fig_degradation_routes.png     # 4-panel summary
+├── tables/
+│   ├── stability_summary.csv
+│   ├── oxidation_sites.csv
+│   └── proteinGroups_filtered.csv
+├── commands.sh
+└── checksums.sha256
+```
+
 ---
 
 ## Test Suite
 
-**59 tests** covering all modules:
+**76 tests** covering all modules:
 
 ```bash
 python test_skill.py
@@ -297,12 +353,30 @@ python test_skill.py
 | Correlation | 2 | |
 | **End-to-end Comparison** | **3** | **Yes** |
 | **End-to-end Stability** | **3** | **Yes** |
+| **Functional Categories** | **5** | **v2.1** |
+| **Functional Enrichment** | **3** | **v2.1** |
+| **Semi-tryptic Detection** | **3** | **v2.1** |
+| **Protease Inventory** | **3** | **v2.1** |
+| **Deamidation Motifs** | **1** | **v2.1** |
+| **Peptide Appearance** | **2** | **v2.1** |
 
 ---
 
 ## Changelog
 
-### v2.0 (Current)
+### v2.1 (Current)
+
+- **`--mode deep-stability`** — Full stability + pathway + oxidation + protease analysis in one command
+- **`degradation_routes.py`** — New module with 9 functions for degradation characterization
+- **Functional enrichment analysis** — 14 categories, enrichment ratios across stability trends
+- **Oxidation kinetics** — Parse `Oxidation (M)Sites.txt`, correlation with degradation
+- **Protease inventory** — Detect endogenous proteases with risk classification (HIGH/MODERATE/LOW)
+- **Semi-tryptic peptide analysis** — Evidence-based protease activity detection
+- **Deamidation motif scanning** — Count NG/NS/NT hotspots
+- **4 new visualization functions** — Functional enrichment, MW, oxidation heatmap, 4-panel degradation
+- **76 tests** (up from 59)
+
+### v2.0
 
 - **Vectorized `differential_abundance()`** — numpy broadcasting replaces `iterrows()` loop (~50-100x speedup)
 - **`--mode stability`** — New time-course degradation analysis mode with baseline normalization

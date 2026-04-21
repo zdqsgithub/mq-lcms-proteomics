@@ -367,3 +367,127 @@ def plot_grouped_bar_timecourse(tc_df, time_points, colors, output_dir='.'):
     fig.savefig(path, bbox_inches='tight'); plt.close(fig)
     return path
 
+
+# ── Degradation Route Visualizations (v2.1: NEW) ────────
+
+def plot_functional_enrichment(cat_pcts, cat_counts, output_dir='.'):
+    """Grouped bar chart of functional category enrichment by trend."""
+    fig, ax = plt.subplots(figsize=(12, 7))
+    x = np.arange(len(cat_counts))
+    bw = 0.25
+    colors_t = {'Degrading': '#F44336', 'Stable': '#9E9E9E', 'Increasing': '#4CAF50'}
+    for i, trend in enumerate(['Degrading', 'Stable', 'Increasing']):
+        if trend in cat_pcts.columns:
+            ax.barh(x + i*bw, cat_pcts[trend], bw, color=colors_t[trend],
+                    label=trend, edgecolor='white')
+    ax.set_yticks(x + bw)
+    ax.set_yticklabels(cat_counts.index, fontsize=10, fontweight='bold')
+    ax.set_xlabel('% of Proteins in Trend Group', fontsize=12, fontweight='bold')
+    ax.set_title('Functional Category Enrichment by Stability Trend',
+                 fontsize=14, fontweight='bold')
+    ax.legend(fontsize=11, prop={'weight': 'bold'})
+    sns.despine(); plt.tight_layout()
+    path = Path(output_dir) / 'fig_functional_enrichment.png'
+    fig.savefig(path, bbox_inches='tight'); plt.close(fig)
+    return path
+
+
+def plot_mw_by_trend(tc_df, output_dir='.'):
+    """Boxplot and histogram of MW distribution by stability trend."""
+    colors_t = {'Degrading': '#F44336', 'Stable': '#9E9E9E', 'Increasing': '#4CAF50'}
+    if 'Mol. weight [kDa]' not in tc_df.columns:
+        return None
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    data = []
+    for _, r in tc_df.iterrows():
+        mw = r.get('Mol. weight [kDa]', np.nan)
+        trend = r.get('trend', 'Stable')
+        if pd.notna(mw):
+            data.append({'Trend': trend, 'MW (kDa)': mw})
+    mw_df = pd.DataFrame(data)
+    sns.boxplot(data=mw_df, x='Trend', y='MW (kDa)', palette=colors_t, ax=axes[0],
+                order=['Degrading','Stable','Increasing'])
+    axes[0].set_title('Molecular Weight Distribution', fontweight='bold')
+    for trend, color in colors_t.items():
+        vals = mw_df[mw_df['Trend']==trend]['MW (kDa)']
+        if len(vals) > 0:
+            axes[1].hist(vals, bins=15, alpha=0.5, color=color,
+                        label=f'{trend} (median={vals.median():.0f})')
+    axes[1].set_xlabel('MW (kDa)'); axes[1].set_ylabel('Count')
+    axes[1].set_title('MW Overlay', fontweight='bold')
+    axes[1].legend(fontsize=8, prop={'weight': 'bold'})
+    sns.despine(); plt.tight_layout()
+    path = Path(output_dir) / 'fig_mw_by_trend.png'
+    fig.savefig(path, bbox_inches='tight'); plt.close(fig)
+    return path
+
+
+def plot_oxidation_heatmap(ox_df, group_names, output_dir='.', n_top=30):
+    """Heatmap of top oxidation sites over time."""
+    ratio_cols = [f'ratio_{g}' for g in group_names if f'ratio_{g}' in ox_df.columns]
+    if not ratio_cols:
+        return None
+    last = group_names[-1]
+    sort_col = f'ratio_{last}' if f'ratio_{last}' in ox_df.columns else ratio_cols[-1]
+    top = ox_df.dropna(subset=[sort_col]).nlargest(n_top, sort_col)
+    if len(top) == 0:
+        return None
+    heat = top[ratio_cols].copy()
+    heat.columns = group_names[:len(ratio_cols)]
+    desc_col = 'description' if 'description' in top.columns else 'Proteins'
+    pos_col = 'Positions within proteins' if 'Positions within proteins' in top.columns else None
+    labels = []
+    for _, r in top.iterrows():
+        d = str(r.get(desc_col, ''))[:25]
+        p = f" [M{str(r[pos_col])[:8]}]" if pos_col and pd.notna(r.get(pos_col)) else ''
+        labels.append(f"{d}{p}")
+    heat.index = labels
+    fig, ax = plt.subplots(figsize=(8, max(6, len(heat)*0.4)))
+    sns.heatmap(heat, cmap='YlOrRd', ax=ax, linewidths=0.5, annot=True, fmt='.2f',
+                cbar_kws={'label': 'Oxidation Ratio (mod/base)'})
+    ax.set_title(f'Top {len(heat)} Oxidation Sites', fontsize=13, fontweight='bold')
+    plt.yticks(fontsize=8, fontweight='bold'); plt.xticks(fontweight='bold')
+    plt.tight_layout()
+    path = Path(output_dir) / 'fig_oxidation_heatmap.png'
+    fig.savefig(path, bbox_inches='tight'); plt.close(fig)
+    return path
+
+
+def plot_degradation_routes_summary(semi_ratios, peptide_counts, acetyl_ratios,
+                                     mc_means, group_names, colors, output_dir='.'):
+    """4-panel summary of all degradation routes."""
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    gn = [g for g in group_names if g in semi_ratios]
+
+    ax = axes[0][0]
+    vals = [semi_ratios.get(g, 0) for g in gn]
+    ax.bar(gn, vals, color=[colors.get(g, '#999') for g in gn], edgecolor='white', width=0.5)
+    ax.set_ylabel('% of Total Intensity')
+    ax.set_title('A) Semi-tryptic Peptides\n(Protease Activity)', fontweight='bold')
+    for i, v in enumerate(vals):
+        ax.text(i, v + 0.02, f'{v:.2f}%', ha='center', fontsize=9, fontweight='bold')
+
+    ax = axes[0][1]
+    pc = [peptide_counts.get(g, 0) for g in gn]
+    ax.bar(gn, pc, color=[colors.get(g, '#999') for g in gn], edgecolor='white', width=0.5)
+    ax.set_ylabel('Peptides Detected')
+    ax.set_title('B) Unique Peptides', fontweight='bold')
+
+    ax = axes[1][0]
+    ac = [acetyl_ratios.get(g, 0) for g in gn]
+    ax.bar(gn, ac, color=[colors.get(g, '#999') for g in gn], edgecolor='white', width=0.5)
+    ax.set_ylabel('% N-term Acetylated')
+    ax.set_title('C) N-terminal Acetylation', fontweight='bold')
+
+    ax = axes[1][1]
+    mc = [mc_means.get(g, 0) for g in gn]
+    ax.bar(gn, mc, color=[colors.get(g, '#999') for g in gn], edgecolor='white', width=0.5)
+    ax.set_ylabel('Mean Missed Cleavages')
+    ax.set_title('D) Missed Cleavages', fontweight='bold')
+
+    sns.despine(); plt.tight_layout()
+    path = Path(output_dir) / 'fig_degradation_routes.png'
+    fig.savefig(path, bbox_inches='tight'); plt.close(fig)
+    return path
+
+

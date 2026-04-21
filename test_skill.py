@@ -209,7 +209,7 @@ def test_demo_comparison():
     tmpdir = tempfile.mkdtemp(prefix='mq_v2_comp_')
     try:
         args = argparse.Namespace(
-            input=None, input_type='maxquant', metadata=None, quant='iBAQ',
+            input=None, input_dir=None, input_type='maxquant', metadata=None, quant='iBAQ',
             mode='comparison', contrasts=None, fc_threshold=1.0, fdr=0.05,
             allergen_keywords=None, model='none', output=tmpdir, demo=True)
         run_comparison(args)
@@ -226,7 +226,7 @@ def test_demo_stability():
     tmpdir = tempfile.mkdtemp(prefix='mq_v2_stab_')
     try:
         args = argparse.Namespace(
-            input=None, input_type='maxquant', metadata=None, quant='iBAQ',
+            input=None, input_dir=None, input_type='maxquant', metadata=None, quant='iBAQ',
             mode='stability', contrasts=None, fc_threshold=1.0, fdr=0.05,
             allergen_keywords=None, model='none', output=tmpdir, demo=True)
         run_stability(args)
@@ -236,6 +236,76 @@ def test_demo_stability():
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 test_demo_stability()
+
+
+# ══ degradation_routes.py tests ══
+print("\n== Testing degradation_routes.py ==")
+
+from degradation_routes import (assign_functional_category, functional_enrichment,
+                                detect_semi_tryptic, semi_tryptic_kinetics,
+                                inventory_proteases_phosphatases,
+                                count_deamidation_motifs, peptide_appearance)
+
+def test_functional_category():
+    check("Cat: HSP", assign_functional_category("Heat shock protein 70") == 'Chaperone/HSP')
+    check("Cat: GST", assign_functional_category("Glutathione S-transferase") == 'Redox/Antioxidant')
+    check("Cat: tropomyosin", assign_functional_category("Tropomyosin") == 'Structural/Muscle')
+    check("Cat: calpain", assign_functional_category("Calpain clp1-like") == 'Other')  # calpain is protease, not in func cats
+    check("Cat: unknown", assign_functional_category("Unknown protein XYZ") == 'Other')
+test_functional_category()
+
+def test_functional_enrichment():
+    df = pd.DataFrame({
+        'description': ['Heat shock protein 70', 'Glutathione transferase', 'Tropomyosin',
+                        'Myosin heavy chain', 'Unknown protein', 'Enolase'],
+        'trend': ['Degrading', 'Degrading', 'Increasing', 'Increasing', 'Stable', 'Stable']
+    })
+    cat_counts, cat_pcts, tg = functional_enrichment(df)
+    check("Enrich: counts OK", 'Degrading' in cat_counts.columns)
+    check("Enrich: pcts OK", cat_pcts['Degrading'].sum() > 0)
+    check("Enrich: groups OK", len(tg['Degrading']) == 2)
+test_functional_enrichment()
+
+def test_semi_tryptic():
+    df = pd.DataFrame({
+        'Sequence': ['PEPTIDEK', 'SAMPLER', 'NOTRYPTIC'],
+        'Amino acid before': ['R', 'K', 'A'],
+        'Amino acid after': ['L', '-', 'G'],
+    })
+    result = detect_semi_tryptic(df)
+    check("Semi: fully tryptic", result.iloc[0]['cleavage_type'] == 'Fully tryptic')
+    check("Semi: c-term only", result.iloc[1]['cleavage_type'] == 'Fully tryptic')  # R end + K before
+    check("Semi: non-tryptic detected", result.iloc[2]['cleavage_type'] in ['Semi-tryptic', 'Non-tryptic'])
+test_semi_tryptic()
+
+def test_protease_inventory():
+    df = pd.DataFrame({
+        'description': ['Calpain clp1-like protein', 'Heat shock protein 70',
+                        'Serine/threonine-protein phosphatase'],
+        'trend': ['Increasing', 'Degrading', 'Degrading']
+    })
+    prot, phos = inventory_proteases_phosphatases(df)
+    check("Inv: calpain found", len(prot) >= 1)
+    check("Inv: calpain high risk", prot.iloc[0]['risk'] == 'HIGH')
+    check("Inv: phosphatase found", len(phos) >= 1)
+test_protease_inventory()
+
+def test_deamidation_motifs():
+    df = pd.DataFrame({'Sequence': ['ANGSTROM', 'PEPTIDE', 'MINSTER']})
+    count = count_deamidation_motifs(df)
+    check("Deamid: NG found", count >= 1)  # ANGSTROM has NG
+test_deamidation_motifs()
+
+def test_peptide_appearance():
+    df = pd.DataFrame({
+        'Intensity D0': [100, 200, 0, 300],
+        'Intensity D7': [0, 200, 300, 400],
+    })
+    groups = {'D0': ['D0'], 'D7': ['D7']}
+    result = peptide_appearance(df, groups)
+    check("Pep appear: lost count", result['lost_from_baseline'] >= 1)
+    check("Pep appear: gained count", result['gained_at_last'] >= 1)
+test_peptide_appearance()
 
 
 # ══ Summary ══
@@ -248,3 +318,4 @@ if FAILED > 0:
 else:
     print("SUCCESS: All tests PASSED!")
     sys.exit(0)
+
