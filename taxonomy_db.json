@@ -1,0 +1,19 @@
+{
+  "version": "2.0",
+  "description": "Taxonomy categorization rules for proteomics data",
+  "categories": {
+    "Shrimp/Crustacean": ["Penaeus", "Macrobrachium", "Artemia", "Halocaridina", "Thor", "Crangon", "Pandalus", "Homarus", "Procambarus", "Nephrops", "Metapenaeus"],
+    "Dust Mite": ["Dermatophagoides", "Euroglyphus", "Blomia", "Tyrophagus", "Lepidoglyphus"],
+    "Mugwort/Artemisia": ["Artemisia"],
+    "Ragweed": ["Ambrosia"],
+    "Birch": ["Betula", "Alnus", "Corylus", "Carpinus"],
+    "Grass Pollen": ["Lolium", "Phleum", "Dactylis", "Festuca", "Poa", "Cynodon"],
+    "Tree Pollen": ["Olea", "Fraxinus", "Quercus", "Platanus", "Cupressus", "Cryptomeria"],
+    "Fungal": ["Alternaria", "Aspergillus", "Cladosporium", "Penicillium", "Fusarium"],
+    "Cat/Dog": ["Felis", "Canis"],
+    "Insect Venom": ["Apis", "Vespula", "Vespa", "Polistes", "Solenopsis"],
+    "Food": ["Arachis", "Glycine", "Triticum", "Prunus", "Malus", "Corylus"],
+    "Bacteria": ["Vibrio", "Planococcus", "Bacillus", "Photobacterium", "Streptomyces", "Nodularia", "Kiloniella", "Vagococcus", "Salinivibrio"],
+    "Human": ["Homo sapiens"]
+  }
+}

@@ -248,3 +248,122 @@ def plot_top_proteins(pg, quant_cols, colors, n=20, output_dir='.'):
     path = Path(output_dir) / f'fig09_top{n}_proteins.png'
     fig.savefig(path, bbox_inches='tight'); plt.close(fig)
     return path
+
+
+# ── Time-Course / Stability Visualizations (v2: NEW) ────────
+
+def plot_timecourse_grid(tc_df, time_points, output_dir):
+    """Grid of per-protein time-course profiles (% of baseline)."""
+    n = len(tc_df)
+    ncols = min(4, n)
+    nrows = max(1, (n + ncols - 1) // ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4*ncols, 3.5*nrows), squeeze=False)
+
+    pct_cols = [f'pct_{g}' for g in time_points]
+    days = list(range(len(time_points)))
+
+    for i, (_, row) in enumerate(tc_df.iterrows()):
+        ax = axes[i//ncols][i%ncols]
+        pcts = [row.get(c, np.nan) for c in pct_cols]
+        trend = row.get('trend', 'Stable')
+        color = '#F44336' if trend == 'Degrading' else '#4CAF50' if trend == 'Increasing' else '#9E9E9E'
+
+        ax.plot(days, pcts, 'o-', color=color, linewidth=2, markersize=8)
+        ax.axhline(100, ls='--', color='grey', alpha=0.5, lw=0.8)
+        label = row.get('label', row.get('description', f'Protein {i}'))
+        ax.set_title(str(label)[:35], fontsize=8, fontweight='bold')
+        ax.set_xlabel('Time Point', fontsize=8)
+        ax.set_ylabel('% of Baseline', fontsize=8)
+        ax.set_xticks(days)
+        ax.set_xticklabels(time_points, fontsize=7)
+        ax.tick_params(labelsize=7)
+        valid_pcts = [p for p in pcts if not np.isnan(p)]
+        ax.set_ylim(0, max(250, max(valid_pcts)*1.1) if valid_pcts else 250)
+
+    for j in range(i+1, nrows*ncols):
+        axes[j//ncols][j%ncols].set_visible(False)
+
+    plt.suptitle('Protein Stability Profiles (% of Baseline)', fontsize=14, fontweight='bold', y=1.01)
+    plt.tight_layout()
+    path = Path(output_dir) / 'fig_timecourse_profiles.png'
+    fig.savefig(path, bbox_inches='tight'); plt.close(fig)
+    return path
+
+
+def plot_waterfall(tc_df, fc_col, pct_col, output_dir, title='Stability Ranking'):
+    """Waterfall chart of fold-change ranked by magnitude."""
+    df = tc_df.dropna(subset=[fc_col]).sort_values(fc_col)
+    fig, ax = plt.subplots(figsize=(10, max(5, len(df)*0.4)))
+    colors_bar = ['#F44336' if v < -0.5 else '#4CAF50' if v > 0.5 else '#9E9E9E'
+                  for v in df[fc_col]]
+    y_pos = range(len(df))
+    label_col = 'label' if 'label' in df.columns else 'description'
+    ax.barh(y_pos, df[fc_col], color=colors_bar, edgecolor='white', height=0.7)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(df[label_col].values, fontsize=9, fontweight='bold')
+    ax.set_xlabel('log2 Fold Change vs Baseline', fontsize=12, fontweight='bold')
+    ax.set_title(title, fontsize=14, fontweight='bold')
+    ax.axvline(0, color='black', lw=1)
+    ax.axvline(-1, color='red', ls='--', alpha=0.5, lw=1)
+    ax.axvline(1, color='green', ls='--', alpha=0.5, lw=1)
+
+    if pct_col in df.columns:
+        for i, (_, row) in enumerate(df.iterrows()):
+            pct = row[pct_col]
+            if pd.notna(pct):
+                ax.text(row[fc_col] + 0.05, i, f'{pct:.0f}%', va='center', fontsize=8, fontweight='bold')
+
+    sns.despine(); plt.tight_layout()
+    path = Path(output_dir) / 'fig_waterfall.png'
+    fig.savefig(path, bbox_inches='tight'); plt.close(fig)
+    return path
+
+
+def plot_composition_shift(tc_df, time_points, colors_list=None, output_dir='.'):
+    """Pie charts showing protein composition at each time point."""
+    if colors_list is None:
+        colors_list = sns.color_palette("husl", len(tc_df))
+    n_tp = len(time_points)
+    fig, axes = plt.subplots(1, n_tp, figsize=(5*n_tp, 6))
+    if n_tp == 1:
+        axes = [axes]
+    for i, g in enumerate(time_points):
+        ax = axes[i]
+        mean_col = f'mean_{g}'
+        vals = tc_df[mean_col].fillna(0) if mean_col in tc_df.columns else pd.Series([0]*len(tc_df))
+        total = vals.sum()
+        pcts = (vals / total * 100) if total > 0 else vals
+        ax.pie(pcts, colors=colors_list, startangle=90)
+        ax.set_title(f'{g}\n(Total: {total/1e9:.1f}B)', fontsize=12, fontweight='bold')
+
+    label_col = 'label' if 'label' in tc_df.columns else 'description'
+    axes[0].legend(tc_df[label_col].apply(lambda x: str(x)[:25]), loc='center left',
+                   bbox_to_anchor=(-0.5, 0.5), fontsize=7, prop={'weight': 'bold'})
+    plt.suptitle('Protein Composition Shift', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    path = Path(output_dir) / 'fig_composition.png'
+    fig.savefig(path, bbox_inches='tight'); plt.close(fig)
+    return path
+
+
+def plot_grouped_bar_timecourse(tc_df, time_points, colors, output_dir='.'):
+    """Grouped bar chart of absolute abundance per time point."""
+    fig, ax = plt.subplots(figsize=(14, 7))
+    x = np.arange(len(tc_df))
+    bw = 0.8 / len(time_points)
+    for i, g in enumerate(time_points):
+        mean_col = f'mean_{g}'
+        vals = tc_df[mean_col].fillna(0) / 1e9 if mean_col in tc_df.columns else np.zeros(len(tc_df))
+        ax.bar(x + i*bw, vals, bw, color=colors.get(g, f'C{i}'), label=g, edgecolor='white')
+    label_col = 'label' if 'label' in tc_df.columns else 'description'
+    ax.set_xticks(x + bw)
+    ax.set_xticklabels(tc_df[label_col].apply(lambda s: str(s)[:30]),
+                       rotation=45, ha='right', fontsize=8, fontweight='bold')
+    ax.set_ylabel('Mean iBAQ (x10^9)', fontsize=12)
+    ax.set_title('Abundance per Time Point', fontsize=14, fontweight='bold')
+    ax.legend(fontsize=11, prop={'weight': 'bold'})
+    sns.despine(); plt.tight_layout()
+    path = Path(output_dir) / 'fig_grouped_bar.png'
+    fig.savefig(path, bbox_inches='tight'); plt.close(fig)
+    return path
+
