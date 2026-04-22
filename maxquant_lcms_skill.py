@@ -1,5 +1,5 @@
 """
-MaxQuant LC-MS/MS Proteomics Bioinformatics & Modeling Skill v2.2
+MaxQuant LC-MS/MS Proteomics Bioinformatics & Modeling Skill v2.3
 =================================================================
 Main entry point with mode dispatcher:
   --mode comparison     : Group vs group (default)
@@ -38,7 +38,8 @@ from degradation_routes import (functional_enrichment, analyze_oxidation_sites,
                                 peptide_appearance, count_deamidation_motifs,
                                 detect_semi_tryptic, coverage_kinetics,
                                 analyze_deamidation_sites, sequence_composition,
-                                fragment_profiling, CALPAIN_AA, CASPASE_AA)
+                                fragment_profiling, biophysical_analysis,
+                                CALPAIN_AA, CASPASE_AA)
 
 
 ALLERGEN_KEYWORDS = [
@@ -658,6 +659,55 @@ def run_deep_stability(args):
             frag['true_protease_df'].to_csv(output_dir / 'tables' / 'protease_fragments.csv', index=False)
         if len(per_prot) > 0:
             per_prot.to_csv(output_dir / 'tables' / 'fragments_per_protein.csv')
+
+        # 10. Biophysical analysis
+        print("Deep: Biophysical analysis (UniProt fetch)...")
+        try:
+            bp_results, bp_comp, fasta_path = biophysical_analysis(stab_df, output_dir)
+            n_fetched = bp_results['length'].notna().sum()
+            R("### 10. Biophysical Property Analysis\n")
+            R("Full-length protein sequences are fetched from UniProt and analyzed for "
+              "biophysical properties that predict thermal stability and aggregation propensity. "
+              "Properties include GRAVY (hydropathy), aliphatic index, isoelectric point (pI), "
+              "percent hydrophobic, charged, aromatic, cysteine, and methionine residues.\n")
+            R(f"- Sequences fetched: **{n_fetched}** / {len(bp_results)}")
+            R(f"- FASTA exported: `biophysical/proteins.fasta`\n")
+            R("| Property | Degrading | Stable | p-value |")
+            R("|----------|:---------:|:------:|:-------:|")
+            for _, cr in bp_comp.iterrows():
+                feat = cr['Feature']
+                d_m = cr.get('Degrading_mean', np.nan)
+                d_s = cr.get('Degrading_std', np.nan)
+                s_m = cr.get('Stable_mean', np.nan)
+                s_s = cr.get('Stable_std', np.nan)
+                p = cr.get('p_DvS', np.nan)
+                d_str = f"{d_m:.2f} +/- {d_s:.2f}" if pd.notna(d_m) else '-'
+                s_str = f"{s_m:.2f} +/- {s_s:.2f}" if pd.notna(s_m) else '-'
+                p_str = f"**{p:.4f}**" if pd.notna(p) and p < 0.05 else (f"{p:.4f}" if pd.notna(p) else '-')
+                R(f"| {feat} | {d_str} | {s_str} | {p_str} |")
+            R("")
+            # Interpretation
+            sig_feats = bp_comp[bp_comp['p_DvS'].fillna(1) < 0.05]
+            if len(sig_feats) > 0:
+                R("**Interpretation:** Statistically significant differences (p < 0.05):")
+                for _, sf in sig_feats.iterrows():
+                    d_m = sf.get('Degrading_mean', 0)
+                    s_m = sf.get('Stable_mean', 0)
+                    direction = 'higher' if d_m > s_m else 'lower'
+                    R(f"- **{sf['Feature']}**: Degrading proteins have {direction} values "
+                      f"({d_m:.2f} vs {s_m:.2f}, p={sf['p_DvS']:.4f})")
+                R("")
+            else:
+                R("**Interpretation:** No biophysical features reached statistical significance "
+                  "(p < 0.05) between Degrading and Stable groups. This may reflect "
+                  "heterogeneous degradation mechanisms or limited sample size.\n")
+            R("*Submit `biophysical/proteins.fasta` to [DeepSTABp](https://deepstabp.bio.rptu.de/) "
+              "for Tm prediction or [TANGO](http://tango.crg.es/) for aggregation-prone region mapping.*\n")
+        except Exception as e:
+            print(f"  Biophysical analysis failed (network?): {e}")
+            R("### 10. Biophysical Property Analysis\n")
+            R(f"*Skipped: could not fetch UniProt sequences ({e}). "
+              "Ensure internet connectivity for this step.*\n")
 
     # Append to existing report
     existing = (output_dir / 'stability_report.md').read_text(encoding='utf-8')

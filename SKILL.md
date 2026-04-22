@@ -5,7 +5,7 @@ description: >
   characterization. Covers data loading, QC, filtering, differential abundance analysis,
   taxonomy enrichment, allergen annotation, publication-quality visualization, and
   predictive modeling. Specification-constrained, reproducible, local-first.
-version: 1.0.0
+version: 2.3.0
 metadata:
   openclaw:
     requires:
@@ -293,10 +293,37 @@ report/
 - ❌ Upload data to any cloud service
 
 ### Statistical Cautions:
-- ⚠️ t-test reliability depends on sufficient replicates (≥3 per group recommended)
-- ⚠️ Imputation assumes MNAR (missing not at random) — may not hold for all designs
-- ⚠️ Multiple testing correction is essential for proteome-wide comparisons
-- ⚠️ With only 2 replicates, p-values have very limited statistical power
+- All trend classifications (Degrading/Stable/Increasing) require **both** |log2FC| > 0.5 **and** p < 0.05
+- Stability summary tables are filtered to p < 0.05 only
+- Correlation outputs show "insufficient data" when sample sizes preclude valid testing
+- t-test reliability depends on sufficient replicates (>=3 per group recommended)
+- Imputation assumes MNAR (missing not at random) -- may not hold for all designs
+- Multiple testing correction is essential for proteome-wide comparisons
+- With only 2 replicates, p-values have very limited statistical power
+
+### Deep-Stability Pipeline (10 Steps)
+
+The `--mode deep-stability` pipeline runs 10 analysis steps:
+
+| Step | Analysis | Output |
+|:---:|----------|--------|
+| 1 | Functional Enrichment | Trend distribution by functional category |
+| 2 | MW Distribution | Molecular weight by trend |
+| 3 | Methionine Oxidation | Oxidation ratio kinetics, correlation with degradation |
+| 4 | Deamidation (NQ) Sites | Deamidation site tracking, correlation |
+| 5 | Protease Activity | Semi-tryptic kinetics, endogenous protease inventory |
+| 6 | Coverage Kinetics | Unfolding vs aggregation signature |
+| 7 | Sequence Composition | GRAVY, Pro, hydrophobic content by trend |
+| 8 | Degradation Routes | 4-panel overview (semi-tryptic, peptides, acetylation, MC) |
+| 9 | Fragment Profiling | P1 cleavage specificity, calpain/caspase classification |
+| 10 | **Biophysical Analysis** | UniProt sequence fetch, pI, aliphatic index, aggregation score |
+
+Step 10 requires internet connectivity to fetch sequences from UniProt REST API.
+It exports a FASTA file for external Tm prediction tools (DeepSTABp, TANGO, CamSol).
+
+### Quantification Fallback
+- Pipeline automatically falls back: iBAQ -> LFQ -> Intensity
+- Reports which quantification was used in the header
 
 ### No Hallucinated Science:
 - All methods based on established proteomics workflows

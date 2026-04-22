@@ -510,3 +510,159 @@ def fragment_profiling(pep_df, groups, acc_trend_map):
         'per_protein_df': per_prot,
         'true_protease_df': true_protease,
     }
+
+
+# ── Biophysical Property Analysis ─────────────────────────
+
+# Kyte-Doolittle hydropathy scale
+_KD = {'A':1.8,'R':-4.5,'N':-3.5,'D':-3.5,'C':2.5,'Q':-3.5,'E':-3.5,'G':-0.4,
+       'H':-3.2,'I':4.5,'L':3.8,'K':-3.9,'M':1.9,'F':2.8,'P':-1.6,'S':-0.8,
+       'T':-0.7,'W':-0.9,'Y':-1.3,'V':4.2}
+
+# Amino acid molecular weights (Da)
+_MW_AA = {'A':89.09,'R':174.20,'N':132.12,'D':133.10,'C':121.16,'Q':146.15,
+          'E':147.13,'G':75.03,'H':155.16,'I':131.17,'L':131.17,'K':146.19,
+          'M':149.21,'F':165.19,'P':115.13,'S':105.09,'T':119.12,'W':204.23,
+          'Y':181.19,'V':117.15}
+
+
+def _compute_pI(seq, aa_count):
+    """Compute isoelectric point by binary search on Henderson-Hasselbalch."""
+    pos_pKa = {'K': 10.5, 'R': 12.4, 'H': 6.0}
+    neg_pKa = {'D': 3.9, 'E': 4.1, 'C': 8.3, 'Y': 10.1}
+    def charge_at_pH(pH):
+        charge = 1.0 / (1 + 10**(pH - 9.7))   # N-term
+        charge -= 1.0 / (1 + 10**(2.3 - pH))   # C-term
+        for aa, pKa in pos_pKa.items():
+            charge += aa_count.get(aa, 0) / (1 + 10**(pH - pKa))
+        for aa, pKa in neg_pKa.items():
+            charge -= aa_count.get(aa, 0) / (1 + 10**(pKa - pH))
+        return charge
+    lo, hi = 0, 14
+    for _ in range(100):
+        mid = (lo + hi) / 2
+        if charge_at_pH(mid) > 0:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
+def compute_protein_properties(seq):
+    """Compute biophysical properties from an amino acid sequence string.
+    
+    Returns dict with: length, MW_kDa, GRAVY, Aliphatic_Index, pI,
+    pct_hydrophobic, pct_charged, pct_aromatic, pct_Cys, pct_Pro, pct_Met,
+    net_charge_pH7, aggregation_score.
+    """
+    n = len(seq)
+    if n == 0:
+        return {}
+    aa_count = {aa: seq.count(aa) for aa in 'ACDEFGHIKLMNPQRSTVWY'}
+    aa_pct = {aa: count / n * 100 for aa, count in aa_count.items()}
+    gravy = sum(_KD.get(aa, 0) for aa in seq) / n
+    aliphatic = aa_pct.get('A', 0) + 2.9*aa_pct.get('V', 0) + 3.9*(aa_pct.get('I', 0) + aa_pct.get('L', 0))
+    mw = sum(_MW_AA.get(aa, 110) for aa in seq) - (n-1)*18.015
+    pI = _compute_pI(seq, aa_count)
+    hydrophobic = sum(aa_count.get(aa, 0) for aa in 'AVILMFW') / n * 100
+    charged = sum(aa_count.get(aa, 0) for aa in 'DEKR') / n * 100
+    aromatic = sum(aa_count.get(aa, 0) for aa in 'FWY') / n * 100
+    # Net charge at pH 7
+    pos_pKa = {'K': 10.5, 'R': 12.4, 'H': 6.0}
+    neg_pKa = {'D': 3.9, 'E': 4.1, 'C': 8.3, 'Y': 10.1}
+    net_charge = 1.0 / (1 + 10**(7 - 9.7)) - 1.0 / (1 + 10**(2.3 - 7))
+    for aa, pKa in pos_pKa.items():
+        net_charge += aa_count.get(aa, 0) / (1 + 10**(7 - pKa))
+    for aa, pKa in neg_pKa.items():
+        net_charge -= aa_count.get(aa, 0) / (1 + 10**(pKa - 7))
+    agg_score = gravy * 10 - abs(net_charge) * 0.5 + hydrophobic * 0.1
+    return {
+        'length': n, 'MW_kDa': round(mw / 1000, 1), 'GRAVY': round(gravy, 3),
+        'Aliphatic_Index': round(aliphatic, 1), 'pI': round(pI, 2),
+        'pct_hydrophobic': round(hydrophobic, 1), 'pct_charged': round(charged, 1),
+        'pct_aromatic': round(aromatic, 1), 'pct_Cys': round(aa_pct.get('C', 0), 2),
+        'pct_Pro': round(aa_pct.get('P', 0), 2), 'pct_Met': round(aa_pct.get('M', 0), 2),
+        'net_charge_pH7': round(net_charge, 1), 'aggregation_score': round(agg_score, 2),
+    }
+
+
+def biophysical_analysis(stab_df, output_dir):
+    """Fetch UniProt sequences and compute biophysical properties for all proteins.
+    
+    Compares Degrading vs Stable vs Increasing groups with Mann-Whitney U tests.
+    Returns (results_df, comparison_df, fasta_path_or_None).
+    """
+    import urllib.request
+
+    # Extract primary accession per protein
+    def primary_acc(acc_str):
+        return str(acc_str).split(';')[0].strip() if pd.notna(acc_str) else ''
+
+    stab_df = stab_df.copy()
+    stab_df['primary_acc'] = stab_df['Majority protein IDs'].apply(primary_acc)
+    all_accs = [a for a in stab_df['primary_acc'].dropna().unique() if len(a) > 3]
+
+    # Fetch from UniProt
+    sequences = {}
+    for acc in all_accs:
+        try:
+            url = f"https://rest.uniprot.org/uniprotkb/{acc}.fasta"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Python/MaxQuantSkill'})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                fasta = resp.read().decode('utf-8')
+                lines = fasta.strip().split('\n')
+                sequences[acc] = {'header': lines[0], 'sequence': ''.join(lines[1:])}
+        except Exception:
+            pass
+
+    # Save FASTA
+    biophys_dir = Path(output_dir) / 'biophysical'
+    biophys_dir.mkdir(exist_ok=True)
+    fasta_path = biophys_dir / 'proteins.fasta'
+    with open(fasta_path, 'w') as f:
+        for acc, data in sequences.items():
+            f.write(f"{data['header']}\n")
+            seq = data['sequence']
+            for i in range(0, len(seq), 70):
+                f.write(seq[i:i+70] + '\n')
+
+    # Compute properties
+    results = []
+    for _, row in stab_df.iterrows():
+        acc = row['primary_acc']
+        entry = {'accession': acc,
+                 'description': str(row.get('description', ''))[:50],
+                 'trend': row.get('trend', 'Unknown')}
+        if acc in sequences:
+            entry.update(compute_protein_properties(sequences[acc]['sequence']))
+        results.append(entry)
+    results_df = pd.DataFrame(results)
+    results_df.to_csv(biophys_dir / 'protein_properties.csv', index=False)
+
+    # Statistical comparison
+    features = ['MW_kDa', 'GRAVY', 'Aliphatic_Index', 'pI', 'pct_hydrophobic',
+                'pct_charged', 'pct_aromatic', 'pct_Cys', 'pct_Pro', 'pct_Met',
+                'net_charge_pH7', 'length', 'aggregation_score']
+    comparison_rows = []
+    for feat in features:
+        row_data = {'Feature': feat}
+        for trend in ['Degrading', 'Stable', 'Increasing']:
+            vals = results_df[results_df['trend'] == trend][feat].dropna()
+            if len(vals) > 0:
+                row_data[f'{trend}_mean'] = round(vals.mean(), 3)
+                row_data[f'{trend}_std'] = round(vals.std(), 3)
+                row_data[f'{trend}_n'] = len(vals)
+        d_vals = results_df[results_df['trend'] == 'Degrading'][feat].dropna()
+        s_vals = results_df[results_df['trend'] == 'Stable'][feat].dropna()
+        if len(d_vals) >= 3 and len(s_vals) >= 3:
+            try:
+                _, p = sp_stats.mannwhitneyu(d_vals, s_vals)
+                row_data['p_DvS'] = round(p, 4)
+            except Exception:
+                row_data['p_DvS'] = np.nan
+        comparison_rows.append(row_data)
+    comparison_df = pd.DataFrame(comparison_rows)
+    comparison_df.to_csv(biophys_dir / 'biophysical_comparison.csv', index=False)
+
+    return results_df, comparison_df, fasta_path
+
