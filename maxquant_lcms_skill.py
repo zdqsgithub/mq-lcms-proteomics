@@ -112,6 +112,24 @@ def _prepare_data(args):
         quant_type = args.quant or 'iBAQ'
         groups, colors = auto_detect_groups(pg_raw, quant_type)
 
+        # Auto-fallback: iBAQ → LFQ → Intensity if selected quant has all zeros
+        fallback_chain = ['iBAQ', 'lfq', 'intensity']
+        start_idx = fallback_chain.index(quant_type) if quant_type in fallback_chain else 0
+        for fb_quant in fallback_chain[start_idx:]:
+            fb_groups, fb_colors = auto_detect_groups(pg_raw, fb_quant)
+            if fb_groups:
+                prefix_map = {'iBAQ': 'iBAQ ', 'lfq': 'LFQ intensity ', 'intensity': 'Intensity '}
+                prefix = prefix_map.get(fb_quant, 'Intensity ')
+                sample_cols = [f'{prefix}{s}' for g in fb_groups.values() for s in g
+                               if f'{prefix}{s}' in pg_raw.columns]
+                total = pg_raw[sample_cols].replace(0, np.nan).sum().sum() if sample_cols else 0
+                if total > 0:
+                    if fb_quant != quant_type:
+                        print(f"  ** {quant_type} columns are empty, falling back to {fb_quant} **")
+                    quant_type = fb_quant
+                    groups, colors = fb_groups, fb_colors
+                    break
+
     pg = filter_protein_groups(pg_raw)
     pg['description'] = pg.get('Fasta headers', pd.Series()).apply(extract_description)
     pg['allergen_code'] = pg.apply(
