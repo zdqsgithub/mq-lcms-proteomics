@@ -121,11 +121,13 @@ def timecourse_analysis(df, group_cols, group_names, baseline_group=None):
                 _, pvals[i] = stats.ttest_ind(a_vals, b_vals, equal_var=False)
         results[f'pval_{g}'] = pvals
 
-    # Trend classification based on last time point
+    # Trend classification: requires BOTH fold-change AND statistical significance (p < 0.05)
     last_g = group_names[-1]
     fc_last = results[f'log2FC_{last_g}']
-    results['trend'] = np.where(fc_last < -0.5, 'Degrading',
-                       np.where(fc_last > 0.5, 'Increasing', 'Stable'))
+    pv_last = results[f'pval_{last_g}']
+    sig = pv_last < 0.05  # statistical significance gate
+    results['trend'] = np.where((fc_last < -0.5) & sig, 'Degrading',
+                       np.where((fc_last > 0.5) & sig, 'Increasing', 'Stable'))
     results.loc[fc_last.isna(), 'trend'] = 'Stable'
 
     # Copy metadata
