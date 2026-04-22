@@ -308,6 +308,49 @@ def test_peptide_appearance():
 test_peptide_appearance()
 
 
+# ══ v2.2 new function tests ══
+print("\n== Testing v2.2 functions ==")
+
+from degradation_routes import (coverage_kinetics, peptide_gravy,
+                                sequence_composition, analyze_deamidation_sites)
+
+def test_gravy():
+    check("GRAVY: hydrophobic", peptide_gravy('AVILM') > 0)
+    check("GRAVY: hydrophilic", peptide_gravy('DERK') < 0)
+    check("GRAVY: returns float", isinstance(peptide_gravy('PEPTIDE'), float))
+test_gravy()
+
+def test_coverage_kinetics():
+    df = pd.DataFrame({
+        'Proteins': ['P001', 'P001', 'P001', 'P002', 'P002'],
+        'Sequence': ['AAAK', 'BBBK', 'CCCK', 'DDDK', 'EEEK'],
+        'Intensity D0': [100, 200, 0, 100, 0],
+        'Intensity D7': [100, 200, 300, 0, 200],
+    })
+    acc_map = {'P001': {'trend': 'Stable', 'description': 'ProtA'},
+               'P002': {'trend': 'Degrading', 'description': 'ProtB'}}
+    groups = {'D0': ['D0'], 'D7': ['D7']}
+    result = coverage_kinetics(df, groups, acc_map)
+    check("Cov: returns DF", isinstance(result, pd.DataFrame))
+    check("Cov: has pep_change", 'pep_change' in result.columns)
+    check("Cov: has trend", 'trend' in result.columns)
+test_coverage_kinetics()
+
+def test_sequence_composition():
+    df = pd.DataFrame({
+        'Proteins': ['P001']*5 + ['P002']*5,
+        'Sequence': ['AVILMPPPK', 'LLLLLR', 'DDDDER', 'KKKKR', 'AAAAR',
+                     'DDDDER', 'EEEER', 'KKKKNR', 'RRRRR', 'SSSSR'],
+    })
+    acc_map = {'P001': {'trend': 'Degrading', 'description': 'ProtA'},
+               'P002': {'trend': 'Increasing', 'description': 'ProtB'}}
+    result = sequence_composition(df, acc_map)
+    check("Comp: returns DF", isinstance(result, pd.DataFrame))
+    check("Comp: has GRAVY", 'GRAVY' in result.columns)
+    check("Comp: has pct_Pro", 'pct_Pro' in result.columns)
+    check("Comp: has trend", 'trend' in result.columns)
+test_sequence_composition()
+
 # ══ Summary ══
 print(f"\n{'='*60}")
 print(f"Test Results: {PASSED} passed, {FAILED} failed, {PASSED+FAILED} total")

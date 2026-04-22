@@ -2,8 +2,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-76%2F76%20passed-brightgreen.svg)](#test-suite)
-[![v2.1](https://img.shields.io/badge/version-2.1-blue.svg)](#changelog)
+[![Tests](https://img.shields.io/badge/tests-86%2F86%20passed-brightgreen.svg)](#test-suite)
+[![v2.2](https://img.shields.io/badge/version-2.2-blue.svg)](#changelog)
 
 A specification-constrained **agent skill** for end-to-end processing of MaxQuant LC-MS/MS proteomics data. Supports both **group comparison** and **time-course stability** analysis modes, with extensible allergen/taxonomy databases and vectorized statistics.
 
@@ -117,9 +117,9 @@ python maxquant_lcms_skill.py \
 
 **Example:** W6 mugwort allergen thermal stability at 37°C — the skill auto-detects Day 0/3/7 groups, normalizes to baseline, classifies proteins as Degrading/Stable/Increasing, and identifies profilin/polcalcin degradation as the cause of potency loss.
 
-### Mode 3: Deep Stability (v2.1 NEW)
+### Mode 3: Deep Stability (v2.1+, updated v2.2)
 
-Full stability analysis + functional enrichment + oxidation kinetics + protease/degradation route characterization.
+Full stability analysis + functional enrichment + oxidation kinetics + deamidation sites + protease/degradation route characterization + coverage kinetics + sequence composition.
 
 ```bash
 python maxquant_lcms_skill.py \
@@ -129,7 +129,12 @@ python maxquant_lcms_skill.py \
   --output deep_report
 ```
 
-**Produces:** Everything from stability mode PLUS functional enrichment bar charts, MW distributions, oxidation heatmaps, protease inventory, semi-tryptic peptide analysis, deamidation motif counts, and a 4-panel degradation route summary.
+**Produces:** Everything from stability mode PLUS functional enrichment bar charts, MW distributions, oxidation heatmaps, deamidation site analysis, protease inventory, semi-tryptic peptide analysis, coverage kinetics (unfolding evidence), sequence composition features (GRAVY, %Pro), and a 4-panel degradation route summary.
+
+**v2.2 additions:**
+- **Deamidation sites**: Parses `Deamidation (NQ)Sites.txt` if present, correlates with degradation
+- **Coverage kinetics**: Tracks unique peptide count per protein per time point — distinguishes unfolding (coverage ↑) from aggregation (coverage ↓)
+- **Sequence composition**: Identifies compositional features (e.g., %Proline) that predict which proteins degrade
 
 ---
 
@@ -149,10 +154,12 @@ python maxquant_lcms_skill.py \
 │  ─ allergen_db.json   ─ BH-FDR, s0                   │
 │  ─ taxonomy_db.json   ─ PCA, SVM/RF                  │
 ├─────────────────────────────────────────────────────┤
-│  degradation_routes.py (v2.1 NEW)                    │
+│  degradation_routes.py (v2.1+v2.2)                   │
 │  ─ functional enrichment   ─ oxidation kinetics      │
 │  ─ protease inventory      ─ semi-tryptic detection  │
 │  ─ deamidation assessment  ─ peptide appearance      │
+│  ─ coverage kinetics (v2.2) ─ deamidation sites(v2.2)│
+│  ─ sequence composition(v2.2)─ peptide GRAVY  (v2.2) │
 ├─────────────────────────────────────────────────────┤
 │  visualization.py                                    │
 │  ─ 12 comparison plots  ─ 4 time-course plots        │
@@ -191,19 +198,23 @@ python maxquant_lcms_skill.py \
 | `run_pca()` | PCA dimensionality reduction |
 | `train_classifier()` | SVM/RF with LOO-CV |
 
-### `degradation_routes.py` — Degradation Characterization (v2.1 NEW)
+### `degradation_routes.py` — Degradation Characterization (v2.1+v2.2)
 
-| Function | Description |
-|----------|-------------|
-| `assign_functional_category()` | Classify proteins into 14 functional categories |
-| `functional_enrichment()` | Enrichment analysis across Degrading/Stable/Increasing |
-| `analyze_oxidation_sites()` | Parse Oxidation (M)Sites.txt, compute kinetics |
-| `correlate_oxidation_degradation()` | Pearson correlation: oxidation vs stability |
-| `detect_semi_tryptic()` | Classify peptides as fully/semi/non-tryptic |
-| `semi_tryptic_kinetics()` | Track protease activity over time |
-| `inventory_proteases_phosphatases()` | Catalog endogenous proteases with risk level |
-| `peptide_appearance()` | Detect new/lost peptides (clipping products) |
-| `count_deamidation_motifs()` | Count NG/NS/NT deamidation hotspots |
+| Function | Description | Version |
+|----------|-------------|:-------:|
+| `assign_functional_category()` | Classify proteins into 14 functional categories | v2.1 |
+| `functional_enrichment()` | Enrichment analysis across Degrading/Stable/Increasing | v2.1 |
+| `analyze_oxidation_sites()` | Parse Oxidation (M)Sites.txt, compute kinetics | v2.1 |
+| `correlate_oxidation_degradation()` | Pearson correlation: modification vs stability | v2.1 |
+| `detect_semi_tryptic()` | Classify peptides as fully/semi/non-tryptic | v2.1 |
+| `semi_tryptic_kinetics()` | Track protease activity over time | v2.1 |
+| `inventory_proteases_phosphatases()` | Catalog endogenous proteases with risk level | v2.1 |
+| `peptide_appearance()` | Detect new/lost peptides (clipping products) | v2.1 |
+| `count_deamidation_motifs()` | Count NG/NS/NT deamidation hotspots | v2.1 |
+| `peptide_gravy()` | Compute Kyte-Doolittle hydropathy score | **v2.2** |
+| `coverage_kinetics()` | Track unique peptides per protein per TP (unfolding evidence) | **v2.2** |
+| `analyze_deamidation_sites()` | Parse Deamidation (NQ)Sites.txt, compute kinetics | **v2.2** |
+| `sequence_composition()` | Per-protein GRAVY, aliphatic index, %Pro, %charged | **v2.2** |
 
 ### `visualization.py` — 20 Figure Types
 
@@ -359,12 +370,24 @@ python test_skill.py
 | **Protease Inventory** | **3** | **v2.1** |
 | **Deamidation Motifs** | **1** | **v2.1** |
 | **Peptide Appearance** | **2** | **v2.1** |
+| **GRAVY Score** | **3** | **v2.2** |
+| **Coverage Kinetics** | **3** | **v2.2** |
+| **Sequence Composition** | **4** | **v2.2** |
 
 ---
 
 ## Changelog
 
-### v2.1 (Current)
+### v2.2 (Current)
+
+- **Coverage kinetics** — Track unique peptide count per protein per time point; distinguishes thermal unfolding (coverage ↑ despite abundance ↓) from aggregation/precipitation (coverage ↓)
+- **Deamidation site analysis** — Parse `Deamidation (NQ)Sites.txt`, compute per-site kinetics, correlate with protein degradation
+- **Sequence composition** — Per-protein GRAVY, aliphatic index, %Proline, %charged, %hydrophobic; statistical comparison across stability trends (Mann-Whitney U)
+- **Peptide GRAVY scoring** — Kyte-Doolittle hydropathy for individual peptides and protein-level aggregation
+- **Deep-stability pipeline** now runs 7 analysis steps (was 4): stability → enrichment → MW → oxidation → deamidation → protease/coverage → composition
+- **86 tests** (up from 76)
+
+### v2.1
 
 - **`--mode deep-stability`** — Full stability + pathway + oxidation + protease analysis in one command
 - **`degradation_routes.py`** — New module with 9 functions for degradation characterization

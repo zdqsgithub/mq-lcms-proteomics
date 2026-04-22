@@ -1,5 +1,5 @@
 """
-MaxQuant LC-MS/MS Proteomics Bioinformatics & Modeling Skill v2.1
+MaxQuant LC-MS/MS Proteomics Bioinformatics & Modeling Skill v2.2
 =================================================================
 Main entry point with mode dispatcher:
   --mode comparison     : Group vs group (default)
@@ -36,7 +36,8 @@ from degradation_routes import (functional_enrichment, analyze_oxidation_sites,
                                 correlate_oxidation_degradation,
                                 semi_tryptic_kinetics, inventory_proteases_phosphatases,
                                 peptide_appearance, count_deamidation_motifs,
-                                detect_semi_tryptic)
+                                detect_semi_tryptic, coverage_kinetics,
+                                analyze_deamidation_sites, sequence_composition)
 
 
 ALLERGEN_KEYWORDS = [
@@ -343,7 +344,25 @@ def run_deep_stability(args):
             R(f"- Oxidation vs degradation: r={r_val:.3f}, p={p_val:.3f}\n")
         ox_df.to_csv(output_dir / 'tables' / 'oxidation_sites.csv', index=False)
 
-    # 4. Protease & peptide analysis
+    # 4. Deamidation site analysis
+    deam_path = data_dir / 'Deamidation (NQ)Sites.txt'
+    if deam_path.exists():
+        print("Deep: Deamidation analysis...")
+        from core import extract_description
+        deam_df = analyze_deamidation_sites(deam_path, groups, extract_description)
+        R(f"### Deamidation (NQ) Sites\n")
+        R(f"- Total sites: **{len(deam_df)}**")
+        last = group_names[-1]
+        if 'ratio_change' in deam_df.columns:
+            n_inc = (deam_df['ratio_change'] > 0).sum()
+            R(f"- Increasing deamidation (D7 > D0): **{n_inc}**")
+        merged_d, r_d, p_d = correlate_oxidation_degradation(deam_df, stab_df, group_names)
+        if r_d is not None:
+            R(f"- Deamidation vs degradation: r={r_d:.3f}, p={p_d:.3f}")
+        deam_df.to_csv(output_dir / 'tables' / 'deamidation_sites.csv', index=False)
+        R("")
+
+    # 5. Protease & peptide analysis
     pep_path = data_dir / 'peptides.txt'
     ev_path = data_dir / 'evidence.txt'
     if pep_path.exists():
@@ -370,6 +389,40 @@ def run_deep_stability(args):
             for _, r in proteases.iterrows():
                 R(f"| {str(r.get('description',''))[:40]} | {r.get('trend','-')} | {r.get('risk','-')} |")
             R("")
+
+        # 6. Coverage kinetics (unfolding evidence)
+        print("Deep: Coverage kinetics...")
+        acc_map = {}
+        for _, r in stab_df.iterrows():
+            for acc in str(r.get('Majority protein IDs', '')).split(';'):
+                acc_map[acc.strip()] = {'trend': r.get('trend', 'Unknown'),
+                                        'description': r.get('description', '')}
+        cov_df = coverage_kinetics(pep_df, groups, acc_map)
+        R("### Coverage Kinetics (Unfolding Evidence)\n")
+        for trend in ['Degrading', 'Stable', 'Increasing']:
+            sub = cov_df[cov_df['trend'] == trend]
+            if len(sub) > 0:
+                R(f"- **{trend}**: mean peptide change = {sub['pep_change'].mean():+.1f} ({sub['pep_pct_change'].mean():+.1f}%)")
+        R("")
+        cov_df.to_csv(output_dir / 'tables' / 'coverage_kinetics.csv')
+
+        # 7. Sequence composition
+        print("Deep: Sequence composition...")
+        comp_df = sequence_composition(pep_df, acc_map)
+        R("### Sequence Features Predicting Stability\n")
+        from scipy import stats as sp_stats
+        for feat in ['GRAVY', 'pct_Pro', 'pct_hydrophobic']:
+            d_vals = comp_df[comp_df['trend']=='Degrading'][feat].dropna()
+            i_vals = comp_df[comp_df['trend']=='Increasing'][feat].dropna()
+            if len(d_vals) > 3 and len(i_vals) > 3:
+                try:
+                    _, p = sp_stats.mannwhitneyu(d_vals.astype(float), i_vals.astype(float))
+                    sig = ' **' if p < 0.05 else ''
+                    R(f"- {feat}: Degrading={d_vals.mean():.2f} vs Increasing={i_vals.mean():.2f} (p={p:.3f}{sig})")
+                except Exception:
+                    pass
+        R("")
+        comp_df.to_csv(output_dir / 'tables' / 'sequence_composition.csv')
 
         # Compute missed cleavages and acetylation
         mc_means = {}

@@ -333,7 +333,11 @@ def plot_composition_shift(tc_df, time_points, colors_list=None, output_dir='.')
         vals = tc_df[mean_col].fillna(0) if mean_col in tc_df.columns else pd.Series([0]*len(tc_df))
         total = vals.sum()
         pcts = (vals / total * 100) if total > 0 else vals
-        ax.pie(pcts, colors=colors_list, startangle=90)
+        pcts = pcts.fillna(0).clip(lower=0)
+        if pcts.sum() > 0:
+            ax.pie(pcts, colors=colors_list, startangle=90)
+        else:
+            ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes)
         ax.set_title(f'{g}\n(Total: {total/1e9:.1f}B)', fontsize=12, fontweight='bold')
 
     label_col = 'label' if 'label' in tc_df.columns else 'description'

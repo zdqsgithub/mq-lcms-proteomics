@@ -260,3 +260,132 @@ def count_deamidation_motifs(peptides_df):
         s = str(seq)
         count += s.count('NG') + s.count('NS') + s.count('NT')
     return count
+
+
+# ── Coverage Kinetics (v2.2) ─────────────────────────────
+
+KD_HYDRO = {'A': 1.8, 'R': -4.5, 'N': -3.5, 'D': -3.5, 'C': 2.5, 'Q': -3.5,
+            'E': -3.5, 'G': -0.4, 'H': -3.2, 'I': 4.5, 'L': 3.8, 'K': -3.9,
+            'M': 1.9, 'F': 2.8, 'P': -1.6, 'S': -0.8, 'T': -0.7, 'W': -0.9,
+            'Y': -1.3, 'V': 4.2}
+
+
+def peptide_gravy(seq):
+    """Compute GRAVY score (grand average of hydropathy)."""
+    s = str(seq)
+    return np.mean([KD_HYDRO.get(aa, 0) for aa in s]) if s else 0
+
+
+def coverage_kinetics(pep_df, groups, acc_trend_map):
+    """Track unique peptide count per protein per time point.
+
+    Args:
+        pep_df: peptides.txt DataFrame (filtered)
+        groups: dict {group_name: [sample1, sample2, ...]}
+        acc_trend_map: dict {accession: {'trend':..., 'description':...}}
+
+    Returns:
+        DataFrame with per-protein peptide count per TP, trend, and change.
+    """
+    def _map_trend(prots):
+        for a in str(prots).split(';'):
+            if a.strip() in acc_trend_map:
+                return acc_trend_map[a.strip()].get('trend', 'Unknown')
+        return 'Unknown'
+
+    def _map_desc(prots):
+        for a in str(prots).split(';'):
+            if a.strip() in acc_trend_map:
+                return acc_trend_map[a.strip()].get('description', str(prots)[:30])
+        return str(prots)[:30]
+
+    pep_df = pep_df.copy()
+    pep_df['trend'] = pep_df['Proteins'].apply(_map_trend)
+    pep_df['prot_desc'] = pep_df['Proteins'].apply(_map_desc)
+
+    per_prot = {}
+    group_names = list(groups.keys())
+    for g, samps in groups.items():
+        int_cols = [f'Intensity {s}' for s in samps if f'Intensity {s}' in pep_df.columns]
+        if not int_cols:
+            continue
+        for desc, grp in pep_df.groupby('prot_desc'):
+            detected = grp[(grp[int_cols].replace(0, np.nan) > 0).any(axis=1)]
+            if desc not in per_prot:
+                per_prot[desc] = {'trend': grp['trend'].iloc[0]}
+            per_prot[desc][f'pep_{g}'] = len(detected)
+
+    cov = pd.DataFrame(per_prot).T
+    base, last = f'pep_{group_names[0]}', f'pep_{group_names[-1]}'
+    cov['pep_change'] = cov.get(last, 0) - cov.get(base, 0)
+    cov['pep_pct_change'] = np.where(
+        cov.get(base, 0) > 0,
+        cov['pep_change'] / cov[base].replace(0, np.nan) * 100, 0)
+
+    return cov
+
+
+def analyze_deamidation_sites(deam_path, groups, extract_desc_fn=None):
+    """Analyze deamidation kinetics from Deamidation (NQ)Sites.txt.
+
+    Same interface as analyze_oxidation_sites for consistency.
+    """
+    df = pd.read_csv(deam_path, sep='\t', low_memory=False)
+    for col in ['Reverse', 'Potential contaminant']:
+        if col in df.columns:
+            df = df[df[col].fillna('').str.strip() != '+']
+
+    if extract_desc_fn and 'Fasta headers' in df.columns:
+        df['description'] = df['Fasta headers'].apply(extract_desc_fn)
+
+    group_names = list(groups.keys())
+    for g, samps in groups.items():
+        ratio_cols = [f'Ratio mod/base {s}' for s in samps
+                      if f'Ratio mod/base {s}' in df.columns]
+        if ratio_cols:
+            df[f'ratio_{g}'] = df[ratio_cols].replace(0, np.nan).mean(axis=1)
+
+    base, last = group_names[0], group_names[-1]
+    if f'ratio_{base}' in df.columns and f'ratio_{last}' in df.columns:
+        df['ratio_change'] = df[f'ratio_{last}'] - df[f'ratio_{base}']
+
+    return df
+
+
+def sequence_composition(pep_df, acc_trend_map):
+    """Compute per-protein sequence composition features.
+
+    Returns DataFrame with GRAVY, aliphatic index, %Pro, %Met, %Cys, etc.
+    """
+    def _map_trend(prots):
+        for a in str(prots).split(';'):
+            if a.strip() in acc_trend_map:
+                return acc_trend_map[a.strip()].get('trend', 'Unknown')
+        return 'Unknown'
+
+    pep_df = pep_df.copy()
+    pep_df['trend'] = pep_df['Proteins'].apply(_map_trend)
+    pep_df['GRAVY'] = pep_df['Sequence'].apply(peptide_gravy)
+
+    feats = {}
+    for desc, grp in pep_df.groupby(pep_df['Proteins'].apply(
+        lambda x: next((acc_trend_map[a.strip()].get('description', str(x)[:30])
+                       for a in str(x).split(';') if a.strip() in acc_trend_map), str(x)[:30]))):
+        all_seq = ''.join(grp['Sequence'].dropna().values)
+        if len(all_seq) < 20:
+            continue
+        n = len(all_seq)
+        pct = {aa: all_seq.count(aa) / n for aa in 'AVILMFYWDENKRHSTCGPQ'}
+        feats[desc] = {
+            'trend': grp['trend'].iloc[0],
+            'GRAVY': peptide_gravy(all_seq),
+            'Aliphatic': (2.9*pct['A'] + 3.9*pct['V'] + 4.19*(pct['I']+pct['L'])) * 100,
+            'pct_Pro': pct['P'] * 100,
+            'pct_Met': pct['M'] * 100,
+            'pct_Cys': pct['C'] * 100,
+            'pct_charged': (pct['D']+pct['E']+pct['K']+pct['R']) * 100,
+            'pct_hydrophobic': (pct['A']+pct['V']+pct['I']+pct['L']+pct['F']+pct['W']+pct['M']) * 100,
+        }
+
+    return pd.DataFrame(feats).T
+
