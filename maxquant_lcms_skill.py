@@ -404,7 +404,7 @@ def run_deep_stability(args):
         R("![Oxidation](fig_oxidation_heatmap.png)\n")
 
         merged, r_val, p_val = correlate_oxidation_degradation(ox_df, stab_df, group_names)
-        if r_val is not None:
+        if r_val is not None and not np.isnan(r_val):
             R(f"- Oxidation vs degradation correlation: Pearson r = {r_val:.3f}, p = {p_val:.3f}")
             if abs(r_val) < 0.3:
                 R("- **Interpretation:** Weak correlation — oxidation is not a primary driver of degradation.\n")
@@ -412,6 +412,8 @@ def run_deep_stability(args):
                 R("- **Interpretation:** Positive correlation — oxidation may contribute to protein instability.\n")
             else:
                 R("")
+        else:
+            R("- Oxidation vs degradation correlation: insufficient data for statistical test.\n")
         ox_df.to_csv(output_dir / 'tables' / 'oxidation_sites.csv', index=False)
 
     # 4. Deamidation site analysis
@@ -432,7 +434,7 @@ def run_deep_stability(args):
             R(f"- Sites with increasing deamidation ({last} > {group_names[0]}): **{n_inc}**")
             R(f"- Sites with decreasing deamidation: **{n_dec}**")
         merged_d, r_d, p_d = correlate_oxidation_degradation(deam_df, stab_df, group_names)
-        if r_d is not None:
+        if r_d is not None and not np.isnan(r_d):
             R(f"- Deamidation vs degradation correlation: Pearson r = {r_d:.3f}, p = {p_d:.3f}")
             if p_d > 0.05:
                 R(f"\n**Interpretation:** No significant correlation (p = {p_d:.3f}) between deamidation "
@@ -440,6 +442,8 @@ def run_deep_stability(args):
             else:
                 R(f"\n**Interpretation:** Significant correlation (p = {p_d:.3f}) detected — deamidation "
                   "may contribute to degradation for a subset of proteins.")
+        else:
+            R("- Deamidation vs degradation correlation: insufficient data for statistical test.")
         deam_df.to_csv(output_dir / 'tables' / 'deamidation_sites.csv', index=False)
         R("")
 
