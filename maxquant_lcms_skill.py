@@ -271,21 +271,27 @@ def run_stability(args):
     plot_composition_shift(tc_df, group_names, output_dir=output_dir)
     R("![Composition](fig_composition.png)\n")
 
-    # Summary table
-    R("## Stability Summary\n")
+    # Summary table (p < 0.05 only)
+    R("## Stability Summary (p < 0.05)\n")
     R("| Protein | Allergen | Baseline iBAQ | Last TP (%) | log2FC | p-value | Trend |")
     R("|---------|----------|---------------|-------------|--------|---------|-------|")
     base_g = group_names[0]
+    n_sig = 0
     for _, row in tc_df.sort_values(f'log2FC_{last_g}').iterrows():
+        pval = row.get(f'pval_{last_g}', np.nan)
+        if pd.notna(pval) and pval >= 0.05:
+            continue
+        n_sig += 1
         label = str(row.get('label', row.get('description', '')))[:35]
         code = row.get('allergen_code', '') or '-'
         d0 = f"{row[f'mean_{base_g}']:.2e}" if pd.notna(row.get(f'mean_{base_g}')) else '-'
         pct = f"{row[f'pct_{last_g}']:.0f}%" if pd.notna(row.get(f'pct_{last_g}')) else '-'
         fc = f"{row[f'log2FC_{last_g}']:.2f}" if pd.notna(row.get(f'log2FC_{last_g}')) else '-'
-        pv = f"{row[f'pval_{last_g}']:.3f}" if pd.notna(row.get(f'pval_{last_g}')) else '-'
+        pv = f"{pval:.3f}" if pd.notna(pval) else '-'
         trend = row.get('trend', '-')
         R(f"| {label} | {code} | {d0} | {pct} | {fc} | {pv} | {trend} |")
-    R("")
+    n_excluded = len(tc_df) - n_sig
+    R(f"\n*{n_sig} proteins with p < 0.05 shown; {n_excluded} proteins excluded (p ≥ 0.05 or not testable).*\n")
 
     # Findings
     degrading = tc_df[tc_df['trend']=='Degrading'].sort_values(f'log2FC_{last_g}')
