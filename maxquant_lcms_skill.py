@@ -229,11 +229,20 @@ def run_stability(args):
     R = report.append
     group_names = list(groups.keys())
 
+    quant_labels = {'iBAQ': 'iBAQ (intensity-Based Absolute Quantification)',
+                    'lfq': 'LFQ (Label-Free Quantification)',
+                    'intensity': 'Raw Intensity'}
     R(f"# Stability Analysis Report")
     R(f"\n*Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}*\n")
     R(f"- Protein groups: {len(pg_raw)} raw -> {len(pg)} filtered")
+    R(f"- Quantification: {quant_labels.get(quant_type, quant_type)}")
     R(f"- Time points: {', '.join(group_names)}")
-    R(f"- Baseline: {group_names[0]}\n")
+    R(f"- Baseline: {group_names[0]}")
+    R("")
+    R("**Abbreviations:** iBAQ = intensity-Based Absolute Quantification; "
+      "LFQ = Label-Free Quantification; log2FC = log2 fold-change relative to baseline; "
+      "TP = time point; GRAVY = Grand Average of Hydropathy (positive = hydrophobic); "
+      "MW = molecular weight (kDa); NQ = asparagine/glutamine (deamidation-prone residues).\n")
 
     # Heatmap
     heat = pg[all_qcols].replace(0, np.nan).apply(np.log2)
@@ -298,6 +307,21 @@ def run_stability(args):
         R(f"- **{r.get('label','')}**: {pct_str} (log2FC={r.get(f'log2FC_{last_g}',0):.2f})")
     R("")
 
+    # Interpretation summary
+    n_total = len(tc_df)
+    R("### Interpretation\n")
+    R(f"Of {n_total} quantified proteins, **{len(degrading)} ({len(degrading)/n_total*100:.0f}%)** show significant "
+      f"loss by the final time point ({last_g}), **{len(stable)} ({len(stable)/n_total*100:.0f}%)** remain stable, and "
+      f"**{len(increasing)} ({len(increasing)/n_total*100:.0f}%)** increase in abundance.\n")
+    if len(degrading) > 0:
+        worst = degrading.iloc[0]
+        R(f"The most severely degraded protein is **{worst.get('label','')}** with only "
+          f"{worst.get(f'pct_{last_g}',0):.0f}% remaining (log2FC = {worst.get(f'log2FC_{last_g}',0):.2f}). ")
+    if len(increasing) > 0:
+        R("Proteins showing increased detection may reflect improved solubility or accessibility as "
+          "competing proteins aggregate out of the soluble fraction, rather than true biosynthetic increase.")
+    R("")
+
     # Save
     tc_df.to_csv(output_dir / 'tables' / 'stability_summary.csv', index=False)
     pg.to_csv(output_dir / 'tables' / 'proteinGroups_filtered.csv', index=False)
@@ -333,18 +357,37 @@ def run_deep_stability(args):
 
     report = ["\n## Deep Stability Analysis\n"]
     R = report.append
+    R("> The following sections assess individual degradation mechanisms "
+      "(oxidation, deamidation, protease clipping, thermal unfolding) to determine "
+      "which pathways drive the observed protein loss and inform stabilization strategy.\n")
 
     # 1. Functional enrichment
     print("Deep: Functional enrichment...")
     cat_counts, cat_pcts, _ = functional_enrichment(stab_df)
     plot_functional_enrichment(cat_pcts, cat_counts, output_dir)
-    R("### Functional Enrichment\n")
+    R("### 1. Functional Enrichment\n")
+    R("Proteins are classified into functional categories (e.g., Chaperone/HSP, "
+      "Redox/Antioxidant, Structural) and their distribution across Degrading, "
+      "Stable, and Increasing trends is compared.\n")
     R("![Enrichment](fig_functional_enrichment.png)\n")
+    # Interpretation
+    for trend in ['Degrading']:
+        sub = stab_df[stab_df['trend'] == trend]
+        if len(sub) > 0:
+            from degradation_routes import assign_functional_category
+            cats = sub['description'].apply(assign_functional_category).value_counts()
+            top_cat = cats.index[0] if len(cats) > 0 else 'N/A'
+            R(f"**Interpretation:** Among degrading proteins, the most represented category is "
+              f"**{top_cat}** ({cats.iloc[0]} proteins). ", )
+    R("")
 
     # 2. MW analysis
     if 'Mol. weight [kDa]' in stab_df.columns:
         plot_mw_by_trend(stab_df, output_dir)
-        R("### Molecular Weight\n")
+        R("### 2. Molecular Weight (MW) Distribution\n")
+        R("MW distributions are compared across stability trends. Larger proteins "
+          "generally have more exposed surface area and may be more susceptible to "
+          "thermal unfolding.\n")
         R("![MW](fig_mw_by_trend.png)\n")
 
     # 3. Oxidation analysis
@@ -354,12 +397,20 @@ def run_deep_stability(args):
         from core import extract_description
         ox_df = analyze_oxidation_sites(ox_path, groups, extract_description)
         plot_oxidation_heatmap(ox_df, group_names, output_dir)
-        R("### Oxidation Kinetics\n")
+        R("### 3. Methionine Oxidation Kinetics\n")
+        R("Methionine (Met) residues are susceptible to oxidation by reactive oxygen species (ROS). "
+          "The ratio of oxidized to unmodified Met is tracked across time points.\n")
         R("![Oxidation](fig_oxidation_heatmap.png)\n")
 
         merged, r_val, p_val = correlate_oxidation_degradation(ox_df, stab_df, group_names)
         if r_val is not None:
-            R(f"- Oxidation vs degradation: r={r_val:.3f}, p={p_val:.3f}\n")
+            R(f"- Oxidation vs degradation correlation: Pearson r = {r_val:.3f}, p = {p_val:.3f}")
+            if abs(r_val) < 0.3:
+                R("- **Interpretation:** Weak correlation — oxidation is not a primary driver of degradation.\n")
+            elif r_val > 0.5:
+                R("- **Interpretation:** Positive correlation — oxidation may contribute to protein instability.\n")
+            else:
+                R("")
         ox_df.to_csv(output_dir / 'tables' / 'oxidation_sites.csv', index=False)
 
     # 4. Deamidation site analysis
@@ -368,15 +419,26 @@ def run_deep_stability(args):
         print("Deep: Deamidation analysis...")
         from core import extract_description
         deam_df = analyze_deamidation_sites(deam_path, groups, extract_description)
-        R(f"### Deamidation (NQ) Sites\n")
-        R(f"- Total sites: **{len(deam_df)}**")
+        R("### 4. Deamidation (NQ) Sites\n")
+        R("Deamidation is the non-enzymatic conversion of asparagine (N) or glutamine (Q) to "
+          "aspartate or glutamate, introducing a negative charge and potential structural disruption. "
+          "Sites are identified from MaxQuant's Deamidation (NQ)Sites.txt output.\n")
+        R(f"- Total deamidation sites detected: **{len(deam_df)}**")
         last = group_names[-1]
         if 'ratio_change' in deam_df.columns:
             n_inc = (deam_df['ratio_change'] > 0).sum()
-            R(f"- Increasing deamidation (D7 > D0): **{n_inc}**")
+            n_dec = (deam_df['ratio_change'] < 0).sum()
+            R(f"- Sites with increasing deamidation ({last} > {group_names[0]}): **{n_inc}**")
+            R(f"- Sites with decreasing deamidation: **{n_dec}**")
         merged_d, r_d, p_d = correlate_oxidation_degradation(deam_df, stab_df, group_names)
         if r_d is not None:
-            R(f"- Deamidation vs degradation: r={r_d:.3f}, p={p_d:.3f}")
+            R(f"- Deamidation vs degradation correlation: Pearson r = {r_d:.3f}, p = {p_d:.3f}")
+            if p_d > 0.05:
+                R(f"\n**Interpretation:** No significant correlation (p = {p_d:.3f}) between deamidation "
+                  "rate and protein degradation. Deamidation is unlikely to be a primary driver of instability.")
+            else:
+                R(f"\n**Interpretation:** Significant correlation (p = {p_d:.3f}) detected — deamidation "
+                  "may contribute to degradation for a subset of proteins.")
         deam_df.to_csv(output_dir / 'tables' / 'deamidation_sites.csv', index=False)
         R("")
 
@@ -394,14 +456,29 @@ def run_deep_stability(args):
         pep_info = peptide_appearance(pep_df, groups)
         n_deamid = count_deamidation_motifs(pep_df)
 
-        R("### Protease Activity\n")
-        R(f"- New peptides at last TP: **{pep_info['gained_at_last']}**")
-        R(f"- Lost peptides: **{pep_info['lost_from_baseline']}**")
-        R(f"- Deamidation-prone motifs: **{n_deamid}**\n")
+        R("### 5. Protease Activity & Peptide Turnover\n")
+        R("Semi-tryptic peptides (cleaved at one non-tryptic site) may indicate endogenous "
+          "protease activity. New peptides appearing at late time points could represent "
+          "cleavage products from active proteolysis.\n")
+        R(f"- New peptides at last TP (time point): **{pep_info['gained_at_last']}**")
+        R(f"- Lost peptides from baseline: **{pep_info['lost_from_baseline']}**")
+        R(f"- Deamidation-prone motifs (NG/NS/NT): **{n_deamid}**")
+        net = pep_info['gained_at_last'] - pep_info['lost_from_baseline']
+        if net < 0:
+            R(f"\n**Interpretation:** Net loss of {abs(net)} peptides suggests proteins are "
+              "leaving the soluble fraction (aggregation/precipitation) rather than being "
+              "actively cleaved by proteases.")
+        else:
+            R(f"\n**Interpretation:** Net gain of {net} peptides may indicate ongoing "
+              "proteolytic clipping or increased trypsin accessibility due to unfolding.")
+        R("")
 
         proteases, phosphatases = inventory_proteases_phosphatases(stab_df)
         if len(proteases) > 0:
-            R("### Proteases Detected\n")
+            R("### Endogenous Proteases Detected\n")
+            R("Proteins matching protease keywords are inventoried and assigned risk levels "
+              "based on their stability trend (Increasing = HIGH risk, Stable = MODERATE, "
+              "Degrading = LOW).\n")
             R("| Protein | Trend | Risk |")
             R("|---------|-------|------|")
             for _, r in proteases.iterrows():
@@ -416,19 +493,42 @@ def run_deep_stability(args):
                 acc_map[acc.strip()] = {'trend': r.get('trend', 'Unknown'),
                                         'description': r.get('description', '')}
         cov_df = coverage_kinetics(pep_df, groups, acc_map)
-        R("### Coverage Kinetics (Unfolding Evidence)\n")
+        R("### 6. Coverage Kinetics (Unfolding vs Aggregation)\n")
+        R("Unique peptide count per protein is tracked over time. This distinguishes two mechanisms:\n")
+        R("- **Unfolding:** Peptide count *increases* despite abundance loss (trypsin accesses buried regions)")
+        R("- **Aggregation:** Peptide count *decreases* along with abundance (protein precipitates out)\n")
+        cov_interp = {}
         for trend in ['Degrading', 'Stable', 'Increasing']:
             sub = cov_df[cov_df['trend'] == trend]
             if len(sub) > 0:
-                R(f"- **{trend}**: mean peptide change = {sub['pep_change'].mean():+.1f} ({sub['pep_pct_change'].mean():+.1f}%)")
+                mean_chg = sub['pep_change'].mean()
+                mean_pct = sub['pep_pct_change'].mean()
+                R(f"- **{trend}**: mean peptide change = {mean_chg:+.1f} ({mean_pct:+.1f}%)")
+                cov_interp[trend] = mean_chg
         R("")
+        deg_chg = cov_interp.get('Degrading', 0)
+        if deg_chg < -1:
+            R("**Interpretation:** Degrading proteins are *losing* peptide coverage, consistent with "
+              "**aggregation/precipitation** rather than simple unfolding. The proteins leave the "
+              "soluble fraction entirely, reducing both abundance and trypsin-accessible surface.\n")
+        elif deg_chg > 1:
+            R("**Interpretation:** Degrading proteins are *gaining* peptide coverage despite losing "
+              "abundance, consistent with **thermal unfolding** — trypsin gains access to previously "
+              "buried regions of the partially unfolded protein.\n")
+        else:
+            R("**Interpretation:** Peptide coverage is stable for degrading proteins, suggesting "
+              "neither dramatic unfolding nor aggregation.\n")
         cov_df.to_csv(output_dir / 'tables' / 'coverage_kinetics.csv')
 
         # 7. Sequence composition
         print("Deep: Sequence composition...")
         comp_df = sequence_composition(pep_df, acc_map)
-        R("### Sequence Features Predicting Stability\n")
+        R("### 7. Sequence Features Predicting Stability\n")
+        R("Amino acid composition is compared between Degrading and Increasing proteins using "
+          "the Mann-Whitney U test. Features tested include GRAVY (Grand Average of Hydropathy), "
+          "percent proline (backbone rigidity), and percent hydrophobic residues (aggregation propensity).\n")
         from scipy import stats as sp_stats
+        sig_feats = []
         for feat in ['GRAVY', 'pct_Pro', 'pct_hydrophobic']:
             d_vals = comp_df[comp_df['trend']=='Degrading'][feat].dropna()
             i_vals = comp_df[comp_df['trend']=='Increasing'][feat].dropna()
@@ -437,9 +537,18 @@ def run_deep_stability(args):
                     _, p = sp_stats.mannwhitneyu(d_vals.astype(float), i_vals.astype(float))
                     sig = ' **' if p < 0.05 else ''
                     R(f"- {feat}: Degrading={d_vals.mean():.2f} vs Increasing={i_vals.mean():.2f} (p={p:.3f}{sig})")
+                    if p < 0.05:
+                        sig_feats.append(feat)
                 except Exception:
                     pass
         R("")
+        if sig_feats:
+            R(f"**Interpretation:** {', '.join(sig_feats)} significantly differ between degrading "
+              "and increasing proteins, providing a compositional signature for predicting thermal "
+              "vulnerability in this extract system.\n")
+        else:
+            R("**Interpretation:** No compositional features reached statistical significance, "
+              "possibly due to limited sample size or heterogeneous degradation mechanisms.\n")
         comp_df.to_csv(output_dir / 'tables' / 'sequence_composition.csv')
 
         # Compute missed cleavages and acetylation
@@ -459,7 +568,9 @@ def run_deep_stability(args):
         pep_counts = pep_info.get('present_per_group', {})
         plot_degradation_routes_summary(semi_ratios, pep_counts, acetyl_ratios,
                                         mc_means, group_names, colors, output_dir)
-        R("### Degradation Routes Summary\n")
+        R("### 8. Degradation Routes Summary\n")
+        R("Four-panel overview of semi-tryptic peptide ratios, unique peptide counts, "
+          "N-terminal acetylation, and missed cleavage rates across time points.\n")
         R("![Routes](fig_degradation_routes.png)\n")
 
     # Append to existing report
