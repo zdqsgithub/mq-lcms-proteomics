@@ -37,7 +37,8 @@ from degradation_routes import (functional_enrichment, analyze_oxidation_sites,
                                 semi_tryptic_kinetics, inventory_proteases_phosphatases,
                                 peptide_appearance, count_deamidation_motifs,
                                 detect_semi_tryptic, coverage_kinetics,
-                                analyze_deamidation_sites, sequence_composition)
+                                analyze_deamidation_sites, sequence_composition,
+                                fragment_profiling, CALPAIN_AA, CASPASE_AA)
 
 
 ALLERGEN_KEYWORDS = [
@@ -572,6 +573,81 @@ def run_deep_stability(args):
         R("Four-panel overview of semi-tryptic peptide ratios, unique peptide counts, "
           "N-terminal acetylation, and missed cleavage rates across time points.\n")
         R("![Routes](fig_degradation_routes.png)\n")
+
+        # 9. Fragment profiling
+        print("Deep: Fragment profiling...")
+        frag = fragment_profiling(pep_df, groups, acc_map)
+        fs = frag['summary']
+        p1 = frag['p1_specificity']
+        R("### 9. Protease Fragment Profiling\n")
+        R("Semi-tryptic peptides with a non-tryptic N-terminus (P1 ≠ K/R/M) are classified as "
+          "potential endogenous protease cleavage products. Their P1 residue specificity is used "
+          "to infer the protease class (e.g., calpain prefers hydrophobic P1 residues).\n")
+        R(f"- Total peptides: **{fs['total']}** (Fully tryptic: {fs['fully_tryptic']}, "
+          f"Semi-tryptic: {fs['semi_tryptic']}, Non-tryptic: {fs['non_tryptic']})")
+        R(f"- Protease fragments (non-K/R/M P1): **{fs['protease_fragments']}**\n")
+
+        # Kinetics table
+        R("#### Fragment Kinetics per Time Point\n")
+        R("| Time | Tryptic | Semi-tryptic | Protease Fragments | % Protease (intensity) |")
+        R("|------|---------|-------------|-------------------|----------------------|")
+        for g in group_names:
+            k = frag['kinetics'].get(g, {})
+            R(f"| {g} | {k.get('n_full',0)} | {k.get('n_semi',0)} | "
+              f"{k.get('n_protease',0)} | {k.get('pct_protease_int',0):.2f}% |")
+        R("")
+
+        # P1 specificity
+        if fs['protease_fragments'] > 0:
+            pct_cal = p1['calpain_n'] / fs['protease_fragments'] * 100
+            pct_cas = p1['caspase_n'] / fs['protease_fragments'] * 100
+            R("#### P1 Cleavage Specificity\n")
+            R(f"- **Calpain-consistent** (hydrophobic P1: L/V/I/F/A/Y/W): "
+              f"**{p1['calpain_n']}** ({pct_cal:.1f}%)")
+            R(f"- Caspase-like (acidic P1: D/E): **{p1['caspase_n']}** ({pct_cas:.1f}%)")
+            R(f"- Other/non-specific: **{p1['other_n']}**\n")
+
+        # New vs lost
+        R("#### Fragment Turnover\n")
+        n_new = len(frag['new_fragments_df'])
+        R(f"- Fragments at baseline ({group_names[0]}): **{frag['kinetics'].get(group_names[0],{}).get('n_protease',0)}**")
+        R(f"- Fragments at last TP ({group_names[-1]}): **{frag['kinetics'].get(group_names[-1],{}).get('n_protease',0)}**")
+        R(f"- **NEW** fragments only at {group_names[-1]}: **{n_new}**")
+        R(f"- Lost from baseline: **{frag['lost_count']}**")
+
+        # Interpretation
+        first_pct = frag['kinetics'].get(group_names[0], {}).get('pct_protease_int', 0)
+        last_pct = frag['kinetics'].get(group_names[-1], {}).get('pct_protease_int', 0)
+        if last_pct < first_pct:
+            R(f"\n**Interpretation:** Protease fragment intensity fraction *decreases* from "
+              f"{first_pct:.1f}% to {last_pct:.1f}%, indicating that cleavage products are "
+              "pre-existing extraction artifacts that decline as parent proteins aggregate "
+              "out of solution. Active proteolysis is **not** a stability driver.")
+        elif last_pct > first_pct * 1.3:
+            R(f"\n**Interpretation:** Protease fragment intensity fraction *increases* from "
+              f"{first_pct:.1f}% to {last_pct:.1f}%, suggesting possible ongoing proteolytic "
+              "activity during storage.")
+        else:
+            R(f"\n**Interpretation:** Protease fragment intensity is stable (~{first_pct:.1f}% → "
+              f"{last_pct:.1f}%), suggesting minimal ongoing proteolysis.")
+        R("")
+
+        # Top cleaved proteins
+        per_prot = frag['per_protein_df']
+        if len(per_prot) > 0:
+            R("#### Most Cleaved Proteins\n")
+            R("| Protein | Fragments | Total Pep | % Clipped | Calpain-like | Trend |")
+            R("|---------|:---------:|:---------:|:---------:|:-----------:|:-----:|")
+            for prot, r in per_prot.head(15).iterrows():
+                R(f"| {str(prot)[:30]} | {r['n_fragments']:.0f} | {r['n_total']:.0f} | "
+                  f"{r['pct_clipped']:.1f}% | {r['calpain_like']:.0f} | {r['protein_trend']} |")
+            R("")
+
+        # Save fragment data
+        if len(frag['true_protease_df']) > 0:
+            frag['true_protease_df'].to_csv(output_dir / 'tables' / 'protease_fragments.csv', index=False)
+        if len(per_prot) > 0:
+            per_prot.to_csv(output_dir / 'tables' / 'fragments_per_protein.csv')
 
     # Append to existing report
     existing = (output_dir / 'stability_report.md').read_text(encoding='utf-8')

@@ -389,3 +389,124 @@ def sequence_composition(pep_df, acc_trend_map):
 
     return pd.DataFrame(feats).T
 
+
+# ── Fragment Profiling (v2.2.3) ───────────────────────────
+
+CALPAIN_AA = {'L', 'V', 'I', 'F', 'A', 'M', 'Y', 'W'}
+CASPASE_AA = {'D', 'E'}
+
+def fragment_profiling(pep_df, groups, acc_trend_map):
+    """Full protease fragment profiling from semi-specific search data.
+
+    Returns dict with:
+      - summary: {total, fully_tryptic, semi_tryptic, non_tryptic, protease_fragments}
+      - kinetics: per-TP counts {group: {n_full, n_semi, n_protease, pct_protease_int}}
+      - p1_specificity: {calpain_n, caspase_n, other_n, aa_counts: Series}
+      - new_fragments_df: DataFrame of fragments appearing only at last TP
+      - lost_count: int
+      - per_protein_df: DataFrame of per-protein cleavage counts
+      - true_protease_df: DataFrame of non-K/R/M semi-tryptic peptides
+    """
+    pep_ann = detect_semi_tryptic(pep_df)
+
+    # Map trends via accession
+    def get_trend(prots):
+        for a in str(prots).split(';'):
+            a = a.strip()
+            if a in acc_trend_map:
+                return acc_trend_map[a].get('trend', 'Unknown')
+        return 'Unknown'
+
+    def get_desc(prots):
+        for a in str(prots).split(';'):
+            a = a.strip()
+            if a in acc_trend_map:
+                return acc_trend_map[a].get('description', str(prots)[:30])
+        return str(prots)[:30]
+
+    pep_ann['protein_trend'] = pep_ann['Proteins'].apply(get_trend)
+    pep_ann['prot_desc'] = pep_ann['Proteins'].apply(get_desc)
+
+    semi = pep_ann[pep_ann['cleavage_type'] == 'Semi-tryptic'].copy()
+    true_protease = semi[~semi['Amino acid before'].isin(['K', 'R', 'M', '-', '', 'nan', np.nan])].copy()
+
+    n_full = (pep_ann['cleavage_type'] == 'Fully tryptic').sum()
+    n_semi = len(semi)
+    n_nontryp = (pep_ann['cleavage_type'] == 'Non-tryptic').sum()
+
+    summary = {'total': len(pep_ann), 'fully_tryptic': n_full,
+               'semi_tryptic': n_semi, 'non_tryptic': n_nontryp,
+               'protease_fragments': len(true_protease)}
+
+    # Per-TP kinetics
+    group_names = list(groups.keys())
+    kinetics = {}
+    for g, samps in groups.items():
+        int_cols = [f'Intensity {s}' for s in samps if f'Intensity {s}' in pep_ann.columns]
+        if not int_cols:
+            continue
+        detected = pep_ann[(pep_ann[int_cols].replace(0, np.nan) > 0).any(axis=1)]
+        semi_det = detected[detected['cleavage_type'] == 'Semi-tryptic']
+        full_det = detected[detected['cleavage_type'] == 'Fully tryptic']
+        prot_det = semi_det[~semi_det['Amino acid before'].isin(['K', 'R', 'M', '-', '', 'nan'])]
+        semi_int = semi_det[int_cols].replace(0, np.nan).sum().sum()
+        full_int = full_det[int_cols].replace(0, np.nan).sum().sum()
+        prot_int = prot_det[int_cols].replace(0, np.nan).sum().sum()
+        total = semi_int + full_int
+        kinetics[g] = {
+            'n_full': len(full_det), 'n_semi': len(semi_det),
+            'n_protease': len(prot_det),
+            'pct_protease_int': prot_int / total * 100 if total > 0 else 0,
+        }
+
+    # P1 cleavage specificity
+    if len(true_protease) > 0:
+        aa_counts = true_protease['Amino acid before'].value_counts()
+        calpain_n = sum(aa_counts.get(aa, 0) for aa in CALPAIN_AA)
+        caspase_n = sum(aa_counts.get(aa, 0) for aa in CASPASE_AA)
+        other_n = len(true_protease) - calpain_n - caspase_n
+    else:
+        aa_counts = pd.Series(dtype=int)
+        calpain_n = caspase_n = other_n = 0
+
+    p1 = {'calpain_n': calpain_n, 'caspase_n': caspase_n,
+           'other_n': other_n, 'aa_counts': aa_counts}
+
+    # New / lost fragments
+    d0_cols = [f'Intensity {s}' for s in groups[group_names[0]]
+               if f'Intensity {s}' in pep_ann.columns]
+    d_last_cols = [f'Intensity {s}' for s in groups[group_names[-1]]
+                   if f'Intensity {s}' in pep_ann.columns]
+
+    if len(true_protease) > 0 and d0_cols and d_last_cols:
+        at_d0 = set(true_protease[(true_protease[d0_cols].replace(0, np.nan) > 0).any(axis=1)].index)
+        at_last = set(true_protease[(true_protease[d_last_cols].replace(0, np.nan) > 0).any(axis=1)].index)
+        new_idx = at_last - at_d0
+        lost_count = len(at_d0 - at_last)
+        new_fragments_df = true_protease.loc[list(new_idx)] if len(new_idx) > 0 else pd.DataFrame()
+    else:
+        new_fragments_df = pd.DataFrame()
+        lost_count = 0
+
+    # Per-protein cleavage profiling
+    if len(true_protease) > 0:
+        per_prot = true_protease.groupby('prot_desc').agg(
+            n_fragments=('Sequence', 'count'),
+            protein_trend=('protein_trend', 'first'),
+            calpain_like=('Amino acid before', lambda x: sum(str(a) in CALPAIN_AA for a in x))
+        ).sort_values('n_fragments', ascending=False)
+        total_per = pep_ann.groupby('prot_desc').size()
+        per_prot['n_total'] = total_per.reindex(per_prot.index).fillna(0)
+        per_prot['pct_clipped'] = per_prot['n_fragments'] / per_prot['n_total'] * 100
+    else:
+        per_prot = pd.DataFrame()
+
+    return {
+        'summary': summary,
+        'kinetics': kinetics,
+        'p1_specificity': p1,
+        'new_fragments_df': new_fragments_df,
+        'lost_count': lost_count,
+        'per_protein_df': per_prot,
+        'true_protease_df': true_protease,
+    }
